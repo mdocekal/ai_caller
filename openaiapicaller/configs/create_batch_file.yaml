@@ -1,0 +1,12 @@
+assembler:  # Assembler for creating batch file.
+  id_format: request-{{index}}  # Format string for custom id. You can use fields: {index} (index of newly created sample starting from zero), {file_name}, {line_number}, and for card granularity also {card_number}.
+  index_start: 0 # Index of the first sample.
+  model: gpt-4o-mini # OpenAI model name.
+  temperature: 1.0 # Temperature of the model.
+  logprobs: false # Whether to return log probabilities of the output tokens or not. If true, returns the log probabilities of each output token returned in the content of message.
+  max_completion_tokens: 1024 # Maximum number of tokens generated.
+  sample_assembler: # Sample assembler for API request.
+    cls: JSONLAssembler  # name of class that is subclass of APISampleAssembler
+    config: # configuration for defined class
+      input_template:  # Jinja2 template for input assembly. You can use fields from the input data.
+  response_format: # Format of the response.

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openaiapicaller"
+dynamic = ["dependencies"]
+version = "0.0.1"
+requires-python = ">=3.10"
+authors = [
+  {name = "Martin Dočekal"},
+]
+description = "Package for calling openai api on datasets."
+readme = "README.md"
+keywords = ["openai", "api", "datasets"]
+
+[project.urls]
+Repository = "https://github.com/DCGM/openai_api_caller"
+
+[project.scripts]
+openaiapicaller = "openaiapicaller.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["openaiapicaller*"]
+exclude = ["tests*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

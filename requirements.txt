@@ -1,0 +1,9 @@
+classconfig~=1.0.5
+Jinja2~=3.1.4
+openai~=1.57.0
+inquirer~=3.4.0
+tiktoken
+tqdm
+numpy
+datasets
+json-repair

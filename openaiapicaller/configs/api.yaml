@@ -1,0 +1,3 @@
+api_key:  # OpenAI API key.
+pool_interval: 300 # Interval in seconds for checking the status of the batch request.
+base_url: # Base URL for OpenAI API.

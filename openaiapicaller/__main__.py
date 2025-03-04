@@ -1,3 +1,4 @@
+import base64
 import csv
 import json
 import logging
@@ -5,21 +6,26 @@ import os.path
 import sys
 from argparse import ArgumentParser
 from contextlib import nullcontext
-from io import StringIO
+from io import StringIO, BytesIO
 from json import JSONDecodeError
+from math import ceil
 from pathlib import Path
 from typing import Sequence, Optional, TextIO
 
 import inquirer
 import numpy as np
+import requests
 import tiktoken
-from classconfig import Config, ConfigurableFactory, ConfigurableMixin
+from PIL import Image
+from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory
 from classconfig.classes import subclasses
 from tqdm import tqdm
 
 from openaiapicaller.api import API
-from openaiapicaller.conversion import ToOpenAIBatchFile
-from openaiapicaller.sample_assembler import APISampleAssembler
+from openaiapicaller.conversion import Convertor
+from openaiapicaller.loader import Loader
+from openaiapicaller.sample_assembler import APISampleAssembler, TemplateBasedAssembler
+from openaiapicaller.template import Template
 from openaiapicaller.utils import read_potentially_malformed_json_result
 
 SCRIPT_DIR = Path(__file__).parent
@@ -30,16 +36,15 @@ class CreateBatchWorkflow(ConfigurableMixin):
     Workflow for creating batch file for OpenAI API.
     """
 
-    assembler: ToOpenAIBatchFile = ConfigurableFactory(ToOpenAIBatchFile,
-                                                               "Assembler for creating batch file.")
+    convertor: Convertor = ConfigurableSubclassFactory(Convertor, "Convertor to batch file.")
 
-    def __call__(self, proc_path: Optional[str]):
+    def __call__(self, proc_path: Optional[str] = None):
         """
         Creates batch file for OpenAI API. Results are printed to stdout.
 
         :param proc_path: Path to data.
         """
-        for req in self.assembler.convert(proc_path):
+        for req in self.convertor.convert(proc_path):
             print(req)
 
 
@@ -67,6 +72,10 @@ def load_requests_ids(file: str) -> set[str]:
         return {json.loads(l)["custom_id"] for l in f}
 
 
+class APISelector(ConfigurableMixin):
+    api: API = ConfigurableSubclassFactory(API, "API type")
+
+
 def batch_request(args):
     """
     Sends requests to OpenAI API.
@@ -74,8 +83,8 @@ def batch_request(args):
     :param args: Parsed arguments.
     """
     config_path = Path(args.config) if args.config is not None else SCRIPT_DIR / "configs" / "api.yaml"
-    config = Config(API).load(config_path)
-    api = ConfigurableFactory(API).create(config)
+    config = Config(APISelector).load(config_path)
+    api = ConfigurableFactory(APISelector).create(config).api
 
     if args.line is None:
         if args.results is None:
@@ -83,23 +92,27 @@ def batch_request(args):
 
         p = Path(args.file)
         with open(args.results, mode=('a' if args.cont else 'w')) if args.results is not None else nullcontext() as res_f:
-            proc_fun = api.process_request_file if args.synchronous else api.batch_request_and_wait
-            if p.is_dir():
-                file_paths = list(p.glob("*.jsonl"))
+            file_paths = list(p.glob("*.jsonl")) if p.is_dir() else [p]
 
-                if args.cont:
-                    finished_requests = load_requests_ids(args.results)
+            if args.cont:
+                finished_requests = load_requests_ids(args.results)
 
-                if args.reverse:
-                    file_paths = reversed(file_paths)
+            if args.reverse:
+                file_paths = reversed(file_paths)
 
-                for f in tqdm(file_paths, desc="Processing split files", unit="file"):
-                    if finished_requests:
-                        batch_ids = load_requests_ids(f)
-                        if batch_ids.issubset(finished_requests):
+            for f in tqdm(file_paths, desc="Processing split files", unit="file"):
+                if finished_requests:
+                    batch_ids = load_requests_ids(f)
+                    if batch_ids.issubset(finished_requests):
+                        continue
+
+                if args.synchronous:
+                    for result in api.process_request_file(f):
+                        if finished_requests and result["custom_id"] in finished_requests:
                             continue
-
-                    res = proc_fun(f)
+                        res_f.write(json.dumps(result, ensure_ascii=False, separators=(',', ':')) + "\n")
+                else:
+                    res = api.batch_request_and_wait(f)
 
                     if finished_requests and len(batch_ids & finished_requests) > 0:
                         # remove already processed requests
@@ -109,21 +122,9 @@ def batch_request(args):
                             res_f.write(line+"\n")
                     else:
                         res_f.write(res)
-                return
-
-            res = proc_fun(args.file)
-            res_f.write(res)
             return
 
-    with open(args.file, mode='r') as f:
-        for i, l in enumerate(f):
-            if i == args.line:
-                line = l
-                break
-        else:
-            raise ValueError(f"Line {args.line} not found.")
-        response = api.client.chat.completions.create(**(json.loads(line)["body"]))
-        print(response)
+    print(json.dumps(api.process_line(args.file, args.line), ensure_ascii=False, separators=(',', ':')))
 
 
 def print_histogram(data: Sequence[int], bins: int = 10, max_bars: int = 10, line_prefix="\t"):
@@ -176,7 +177,7 @@ def batch_request_tokens(args):
 
             number_of_tokens_sample = 0
             for message in record["body"]["messages"]:
-                token_cnt = len(tokenizers[model].encode(message["content"]))
+                token_cnt = len(tokenizers[model].encode(message["content"], allowed_special="all"))
                 number_of_tokens_sample += token_cnt
                 number_of_tokens_messages.append(token_cnt)
 
@@ -187,6 +188,34 @@ def batch_request_tokens(args):
 
     print("Granularity: message")
     print_batch_stats(number_of_tokens_messages)
+
+
+def calculate_image_tokens(width: int, height: int) -> int:
+    """
+    Calculates number of tokens for image for OpenAI API.
+    Taken from: https://community.openai.com/t/how-do-i-calculate-image-tokens-in-gpt4-vision/492318/5
+
+    :param width: Number of pixels in width.
+    :param height: Number of pixels in height.
+    :return: Number of tokens.
+    """
+    if width > 2048 or height > 2048:
+        aspect_ratio = width / height
+        if aspect_ratio > 1:
+            width, height = 2048, int(2048 / aspect_ratio)
+        else:
+            width, height = int(2048 * aspect_ratio), 2048
+
+    if width >= height and height > 768:
+        width, height = int((768 / height) * width), 768
+    elif height > width and width > 768:
+        width, height = 768, int((768 / width) * height)
+
+    tiles_width = ceil(width / 512)
+    tiles_height = ceil(height / 512)
+    total_tokens = 85 + 170 * (tiles_width * tiles_height)
+
+    return total_tokens
 
 
 def split_batch(args):
@@ -201,16 +230,44 @@ def split_batch(args):
     output_path = Path(args.output)
     output_path.mkdir(parents=True, exist_ok=True)
     with open(args.file, mode='r') as f:
-        for line in f:
+        for i, line in enumerate(f):
             record = json.loads(line)
             model = record["body"]["model"]
-            model = model.rstrip("-mini")
+
             if model not in tokenizers:
                 tokenizers[model] = tiktoken.encoding_for_model(model)
 
             token_cnt = 0
             for message in record["body"]["messages"]:
-                token_cnt += len(tokenizers[model].encode(message["content"]))
+                if isinstance(message["content"], list):
+                    # multi modal
+                    for sub_message in message["content"]:
+                        if sub_message["type"] == "image_url":
+                            # load image
+                            image = sub_message["image_url"]["url"]
+                            # link of base64 image
+                            if image.startswith("data:image/"):
+                                image = image.split(",")[1]
+                                # load base64 image
+                                image = Image.open(BytesIO(base64.b64decode(image)))
+                                token_cnt += calculate_image_tokens(image.width, image.height)
+                            elif image.startswith("http"):
+                                # download image
+                                r = requests.get(image, stream=True)
+                                if r.status_code == 200:
+                                    image = Image.open(BytesIO(r.content))
+                                    token_cnt += calculate_image_tokens(image.width, image.height)
+                                else:
+                                    raise ValueError(f"Failed to download image: {image} in record {record['custom_id']}")
+                            else:
+                                raise ValueError(f"Unknown image type: {image} in record {record['custom_id']}")
+                        elif sub_message["type"] == "text":
+                            token_cnt += len(tokenizers[model].encode(sub_message["text"], allowed_special="all"))
+                        else:
+                            raise ValueError(f"Unknown message type: {sub_message['type']} in record {record['custom_id']}")
+
+                else:
+                    token_cnt += len(tokenizers[model].encode(message["content"], allowed_special="all"))
 
             if number_of_tokens > 0 and number_of_tokens + token_cnt > args.max_tokens:
                 with open(output_path / f"batch_{file_cnt}.jsonl", mode='w') as out:
@@ -235,22 +292,62 @@ def create_empty_config_for_create_batch_workflow(args, f: TextIO):
     :param f: File to write the configuration to.
     """
     print("creating config for CreateBatchWorkflow")
-    conv_subclasses = [c.__name__ for c in subclasses(APISampleAssembler)]
-    conversion = inquirer.prompt([
-        inquirer.List('conversion',
-                      message="Choose conversion",
-                      choices=conv_subclasses,
+
+    convertor_subclasses = [c.__name__ for c in subclasses(Convertor)]
+    convertor = inquirer.prompt([
+        inquirer.List('convertor',
+                      message="Choose convertor",
+                      choices=convertor_subclasses,
                       )
-    ])["conversion"]
+    ])["convertor"]
+
+    loader_subclasses = [c.__name__ for c in subclasses(Loader)]
+    loader = inquirer.prompt([
+        inquirer.List('loader',
+                      message="Choose loader",
+                      choices=loader_subclasses,
+                      )
+    ])["loader"]
+
+    assembler_subclasses = [c.__name__ for c in subclasses(APISampleAssembler)]
+    assembler = inquirer.prompt([
+        inquirer.List('assembler',
+                      message="Choose sample assembler",
+                      choices=assembler_subclasses,
+                      )
+    ])["assembler"]
+
+    template = None
+
+    if assembler in set(c.__name__ for c in subclasses(TemplateBasedAssembler)):
+        template_subclasses = [c.__name__ for c in subclasses(Template)]
+        template = inquirer.prompt([
+            inquirer.List('template',
+                          message="Choose template type",
+                          choices=template_subclasses,
+                          )
+        ])["template"]
 
     save_to = StringIO()
 
     config = Config(CreateBatchWorkflow,
                     file_override_user_defaults={
-                        "assembler": {
-                            "sample_assembler": {
-                                "cls": conversion,
-                                "config": {}
+                        "convertor": {
+                            "cls": convertor,
+                            "config": {
+                                "loader": {
+                                    "cls": loader,
+                                    "config": {}
+                                },
+                                "sample_assembler": {
+                                    "cls": assembler,
+                                    "config": {
+                                        "input_template": {
+                                            "cls": template,
+                                            "config": {}
+                                        }
+                                    } if template is not None else {}
+                                }
                             }
                         }
                     })
@@ -268,8 +365,24 @@ def create_empty_config_for_api(args, f: TextIO):
     :param f: File to write the configuration to.
     """
     print("creating config for API")
+    conv_subclasses = [c.__name__ for c in subclasses(API)]
+    api = inquirer.prompt([
+        inquirer.List('api',
+                      message="Choose api",
+                      choices=conv_subclasses,
+                      )
+    ])["api"]
+
     save_to = StringIO()
-    config = Config(API)
+
+    config = Config(APISelector,
+                    file_override_user_defaults={
+                        "api": {
+                            "cls": api,
+                            "config": {}
+                        }
+                    })
+
     config.save(save_to)
 
     f.write(save_to.getvalue())
@@ -285,12 +398,12 @@ def create_config(args):
     config_type = inquirer.prompt([
         inquirer.List('config_type',
                       message="Which configuration do you want to create?",
-                      choices=["batch workflow", "API"],
+                      choices=["create batch workflow", "API"],
                       )
     ])["config_type"]
 
-    with open(args.path, mode='w') as f:
-        if config_type == "batch workflow":
+    with (sys.stdout if args.path is None else open(args.path, mode='w')) as f:
+        if config_type == "create batch workflow":
             create_empty_config_for_create_batch_workflow(args, f)
         elif config_type == "API":
             create_empty_config_for_api(args, f)
@@ -387,7 +500,7 @@ def main():
     batch_request_parser.set_defaults(func=batch_request)
 
     batch_request_tokens_parser = subparsers.add_parser("batch_request_tokens",
-                                                        help="Provides statistics about the number of tokens in the batch file.")
+                                                        help="Provides statistics about the number of tokens in the batch file, works only for openai models.")
     batch_request_tokens_parser.add_argument("file", help="Path to the batch file.")
     batch_request_tokens_parser.set_defaults(func=batch_request_tokens)
 
@@ -412,7 +525,7 @@ def main():
     prompt_res_pair_parser.set_defaults(func=prompt_res_pair)
 
     create_config_parser = subparsers.add_parser("create_config", help="Creates configuration.")
-    create_config_parser.add_argument("path", help="Path to the configuration file.")
+    create_config_parser.add_argument("--path", help="Path to the configuration file.")
     create_config_parser.set_defaults(func=create_config)
 
     args = parser.parse_args()

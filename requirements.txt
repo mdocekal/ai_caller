@@ -2,8 +2,12 @@ classconfig~=1.0.5
 Jinja2~=3.1.4
 openai~=1.57.0
 inquirer~=3.4.0
-tiktoken
-tqdm
-numpy
+tiktoken~=0.8.0
+tqdm~=4.66.5
+numpy~=1.26.4
 datasets
 json-repair
+ollama~=0.4.7
+segmentedstring~=1.0.1
+pillow~=10.4.0
+requests~=2.32.3

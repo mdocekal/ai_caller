@@ -1,27 +1,36 @@
-import json
-from abc import ABC, abstractmethod
-
-import json
 from abc import ABC
-from typing import Generator, Union, Optional
+from abc import abstractmethod
+from pathlib import Path
+from typing import Generator, Union, Optional, Any, Sequence
 
-import jinja2
-from classconfig import ConfigurableValue, RelativePathTransformer
-from classconfig.validators import StringValidator
-from datasets import load_dataset
+from classconfig import ConfigurableValue, ConfigurableSubclassFactory, ConfigurableFactory
+from classconfig.validators import StringValidator, AnyValidator, IsNoneValidator
+from datasets import Dataset
+
+from openaiapicaller.few_shot_sampler import FewShotSampler
+from openaiapicaller.template import StringTemplate, Template
 
 
 class APISampleAssembler(ABC):
     """
     Base class for assemblers that are used to create samples for API requests.
     """
+    few_shot_sampler: Optional[FewShotSampler] = ConfigurableFactory(
+        FewShotSampler,
+        "Few shot sampler for sampling examples. It will save few-shot indices and samples to few_shot_indices and few_shot fields.",
+        voluntary=True
+    )
+
+    def __init__(self, few_shot_sampler: Optional[FewShotSampler]):
+        self.few_shot_sampler = few_shot_sampler
 
     @abstractmethod
-    def assemble(self, p: Optional[str]) -> Generator[tuple[str, dict[str, Union[str, int]]], None, None]:
+    def assemble(self, dataset: Dataset, select: Optional[Sequence[int]] = None) -> Generator[tuple[Any, dict[str, Union[str, int]]], None, None]:
         """
         Assembles samples for API requests.
 
-        :param p: Path to data.
+        :param dataset: Dataset for assembly of samples.
+        :param select: List of indices to select. Else all samples are selected.
         :return: Generator of assembled samples.
             In form of tuple:
                 sample
@@ -30,35 +39,57 @@ class APISampleAssembler(ABC):
         ...
 
 
-class Jinja2Assembler(APISampleAssembler, ABC):
+class TemplateBasedAssembler(APISampleAssembler, ABC):
     """
-    Jinja2 template based sample assembler.
+    Template based sample assembler.
     """
 
-    input_template: str = ConfigurableValue("Jinja2 template for input assembly. You can use fields from the input data.",
-                                            validator=StringValidator())
+    input_template: Template = ConfigurableSubclassFactory(Template, "Template for input assembly.",
+                                                           user_default=StringTemplate)
 
-    def __init__(self, input_template: str):
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None):
         """
         Initializes the assembler.
 
-        :param input_template: Jinja2 template for input assembly. You can use fields from the input data.
         """
+        super().__init__(few_shot_sampler)
         self.input_template = input_template
-        self.jinja = jinja2.Environment()
-        self.jinja_input_template = self.jinja.from_string(self.input_template)
+
+    def add_few_shot(self, sample: dict):
+        """
+        Adds few-shot indices and samples to the sample.
+
+        :param sample: Sample to add few-shot to.
+        """
+        if self.few_shot_sampler is not None:
+            sample["few_shot_indices"], sample["few_shot"] = self.few_shot_sampler.sample()
 
 
-class JSONLAssembler(Jinja2Assembler):
+class TextDatasetAssembler(TemplateBasedAssembler):
     """
-    Assembles samples from jsonl file.
+    Assembles samples from text dataset.
     """
 
-    def assemble(self, p: str) -> Generator[tuple[str, dict[str, Union[str, int]]], None, None]:
+    direct: Optional[str] = ConfigurableValue("Name of jsonl field that contains the sample. In that case, the template is not used.",
+                                                voluntary=True, validator=AnyValidator([IsNoneValidator(), StringValidator()]))
+
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None, direct: Optional[str] = None):
+        """
+        Initializes the assembler.
+
+        """
+        super().__init__(
+            few_shot_sampler=few_shot_sampler,
+            input_template=input_template
+        )
+        self.direct = direct
+
+    def assemble(self, dataset: Dataset, select: Optional[Sequence[int]] = None) -> Generator[tuple[Any, dict[str, Union[str, int]]], None, None]:
         """
         Assembles samples from search results.
 
-        :param p: path to jsonl file with search results
+        :param dataset: Dataset for assembly of samples.
+        :param select: List of indices to select. Else all samples are selected.
         :return: Generator of assembled samples.
             In form of tuple:
                 sample
@@ -68,51 +99,46 @@ class JSONLAssembler(Jinja2Assembler):
                     }
         """
 
-        with open(p, mode='r') as f:
-            for line_number, line in enumerate(f):
-                data = json.loads(line)
-                sample = self.jinja_input_template.render(data)
-                yield sample, {"line_number": line_number}
+        for line_number, sample in enumerate(dataset):
+            if select is not None and line_number not in select:
+                continue
+            if self.direct:
+                sample = sample[self.direct]
+            else:
+                self.add_few_shot(sample)
+                sample = self.input_template.render(sample)
+
+            yield sample, {"line_number": line_number}
 
 
-class HuggingfaceDatasetAssembler(Jinja2Assembler):
-    """
-    Assembles samples from Huggingface dataset.
-    """
+class ImageDatasetAssembler(TemplateBasedAssembler):
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None):
+        super().__init__(
+            few_shot_sampler=few_shot_sampler,
+            input_template=input_template
+        )
 
-    dataset: str = ConfigurableValue("Name or path of the dataset.", validator=StringValidator(), voluntary=True,
-                                     transform=RelativePathTransformer(force_relative_prefix=True))
-    split: str = ConfigurableValue("Split of the dataset.", validator=StringValidator())
-    config: Optional[str] = ConfigurableValue("Configuration name.", voluntary=True, validator=StringValidator())
-
-    def __init__(self, input_template: str, dataset: str, split: str, config: Optional[str] = None):
+    def assemble(self, dataset: Dataset, select: Optional[Sequence[int]] = None) -> Generator[tuple[Any, dict[str, Union[str, int]]], None, None]:
         """
-        Initializes the assembler.
+        Assembles samples from Huggingface image folder dataset.
 
-        :param input_template: Jinja2 template for input assembly. You can use fields from the input data.
-        :param dataset: Name or path of the dataset.
-        :param split: Split of the dataset.
-        :param config: Configuration name.
-        """
-        super().__init__(input_template)
-        self.dataset = dataset
-        self.split = split
-        self.config = config
-
-    def assemble(self, p: Optional[str]) -> Generator[tuple[str, dict[str, Union[str, int]]], None, None]:
-        """
-        Assembles samples from Huggingface dataset.
-
-        :param p: Path to the dataset.
+        :param dataset: Dataset for assembly of samples.
+        :param select: List of indices to select. Else all samples are selected.
         :return: Generator of assembled samples.
             In form of tuple:
                 sample
                 dictionary of identifiers
                     {
-                        line_number: number of the line (starting from 0)
+                        image_path: path to the image
+                        file_name: name of the file (without extension)
                     }
         """
+        if select:
+            dataset = dataset.select(select)
 
-        dataset = load_dataset(self.dataset, self.config)
-        for i, sample in enumerate(dataset[self.split]):
-            yield self.jinja_input_template.render(sample), {"line_number": i}
+        for sample in dataset:
+            self.add_few_shot(sample)
+            yield self.input_template.render(sample), {
+                "image_path": sample["image"].filename,
+                "file_name": Path(sample["image"].filename).stem
+            }

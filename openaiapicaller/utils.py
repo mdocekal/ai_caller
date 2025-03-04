@@ -4,6 +4,7 @@ Created on 02.12.24
 
 :author:     Martin Dočekal
 """
+import base64
 import json
 import re
 import sys
@@ -11,6 +12,7 @@ import time
 from json import JSONDecodeError
 
 import json_repair
+from PIL import Image
 
 
 def jsonl_field_value_2_file_offset_mapping(file: str, field: str) -> dict:
@@ -52,3 +54,30 @@ def read_potentially_malformed_json_result(j: str, should_be_dict: bool = True) 
             raise JSONDecodeError("Could not parse JSON.", j, 0)
         r = r[0]
     return r
+
+
+def obtain_base64_image(path: str) -> str:
+    """
+    Obtains base64 image from the path.
+
+    :param path: path to the image
+    :return: base64 image
+    """
+
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def is_url(url: str) -> bool:
+    return url.startswith("http://") or url.startswith("https://")
+
+
+def detect_image_format(path: str) -> str:
+    """
+    Detects image format from the path.
+
+    :param path: path to the image
+    :return: image format
+    """
+    with Image.open(path) as img:
+        return img.format.lower()

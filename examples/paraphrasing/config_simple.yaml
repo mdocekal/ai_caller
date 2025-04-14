@@ -1,0 +1,57 @@
+convertor:  # Convertor to batch file.
+  cls: ToOpenAIBatchFile  # name of class that is subclass of Convertor
+  config: # configuration for defined class
+    loader:  # Loader for the data.
+      cls: HFLoader  # name of class that is subclass of Loader
+      config: # configuration for defined class
+        path_to: nyu-mll/glue # Path to the data.
+        config: mrpc # Configuration name.
+        split: test # Split of the dataset.
+    id_format: "{{idx}}" # Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.
+    model: gpt-4o-mini # OpenAI model name.
+    temperature: 1.0 # Temperature of the model.
+    logprobs: false # Whether to return log probabilities of the output tokens or not. If true, returns the log probabilities of each output token returned in the content of message.
+    max_completion_tokens: 1024 # Maximum number of tokens generated.
+    sample_assembler: # Sample assembler for API request.
+      cls: TextDatasetAssembler  # name of class that is subclass of APISampleAssembler
+      config: # configuration for defined class
+        few_shot_sampler:  # Few shot sampler for sampling examples. It will save few-shot indices and samples to few_shot_indices and few_shot fields.
+          load:  # Loader for the data.
+            cls: HFLoader  # name of class that is subclass of Loader
+            config: # configuration for defined class
+              path_to: nyu-mll/glue # Path to the data.
+              config: mrpc # Configuration name.
+              split: train # Split of the dataset.
+          n: 3 # Number of examples to sample.
+        id_fields: # List of additional dataset fields to use for sample ids.
+          - idx
+        input_template: # Template for input assembly.
+          cls: StringTemplate  # name of class that is subclass of Template
+          config: # configuration for defined class
+            template: | # Jinja2 template for prompt sequence.
+              Decide whether the sentences are paraphrases or not. Answer with 1 for yes and 0 for no.
+              {{few_shot[0]["sentence1"]}}
+              {{few_shot[0]["sentence2"]}}
+              {"label":{{few_shot[0]["label"]}}}
+              {{few_shot[1]["sentence1"]}}
+              {{few_shot[1]["sentence2"]}}
+              {"label":{{few_shot[1]["label"]}}}
+              {{few_shot[2]["sentence1"]}}
+              {{few_shot[2]["sentence2"]}}
+              {"label":{{few_shot[2]["label"]}}}
+              {{sentence1}}
+              {{sentence2}}
+        direct: # Name of jsonl field that contains the sample. In that case, the template is not used.
+    response_format: # Format of the response.
+        type: json_schema
+        json_schema:
+          name: paraphrase
+          strict: true
+          schema:
+            type: object
+            properties:
+              label:
+                type: integer
+            additionalProperties: false
+            required:
+                - label

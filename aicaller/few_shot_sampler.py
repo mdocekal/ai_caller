@@ -3,7 +3,7 @@ from typing import Optional
 
 from classconfig import ConfigurableSubclassFactory, ConfigurableValue
 
-from openaiapicaller.loader import Loader
+from aicaller.loader import Loader
 
 
 class FewShotSampler:

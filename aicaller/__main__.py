@@ -1,4 +1,3 @@
-import base64
 import csv
 import json
 import logging
@@ -6,29 +5,24 @@ import os.path
 import sys
 from argparse import ArgumentParser
 from contextlib import nullcontext
-from io import StringIO, BytesIO
+from io import StringIO
 from json import JSONDecodeError
-from math import ceil
 from pathlib import Path
 from typing import Sequence, Optional, TextIO
 
 import inquirer
 import numpy as np
-import requests
 import tiktoken
-from PIL import Image
 from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory
 from classconfig.classes import subclasses
 from tqdm import tqdm
 
-from openaiapicaller.api import API
-from openaiapicaller.conversion import Convertor
-from openaiapicaller.loader import Loader
-from openaiapicaller.sample_assembler import APISampleAssembler, TemplateBasedAssembler
-from openaiapicaller.template import Template
-from openaiapicaller.utils import read_potentially_malformed_json_result
-
-SCRIPT_DIR = Path(__file__).parent
+from aicaller.api import API
+from aicaller.conversion import Convertor
+from aicaller.loader import Loader
+from aicaller.sample_assembler import APISampleAssembler, TemplateBasedAssembler
+from aicaller.template import Template
+from aicaller.utils import read_potentially_malformed_json_result, TokenCounter
 
 
 class CreateBatchWorkflow(ConfigurableMixin):
@@ -55,7 +49,7 @@ def create_batch_file(args):
     :param args: Parsed arguments.
     """
 
-    config_path = Path(args.config) if args.config is not None else SCRIPT_DIR / "configs" / "create_batch_file.yaml"
+    config_path = Path(args.config)
     config = Config(CreateBatchWorkflow).load(config_path)
     workflow = ConfigurableFactory(CreateBatchWorkflow).create(config)
     workflow(proc_path=args.path)
@@ -82,7 +76,7 @@ def batch_request(args):
 
     :param args: Parsed arguments.
     """
-    config_path = Path(args.config) if args.config is not None else SCRIPT_DIR / "configs" / "api.yaml"
+    config_path = Path(args.config)
     config = Config(APISelector).load(config_path)
     api = ConfigurableFactory(APISelector).create(config).api
 
@@ -93,6 +87,8 @@ def batch_request(args):
         p = Path(args.file)
         with open(args.results, mode=('a' if args.cont else 'w')) if args.results is not None else nullcontext() as res_f:
             file_paths = list(p.glob("*.jsonl")) if p.is_dir() else [p]
+
+            finished_requests = set()
 
             if args.cont:
                 finished_requests = load_requests_ids(args.results)
@@ -158,7 +154,7 @@ def print_batch_stats(data: Sequence[int], line_prefix="\t"):
     print_histogram(data, bins=10, max_bars=10, line_prefix=line_prefix)
 
 
-def batch_request_tokens(args):
+def batch_stats(args):
     """
     Provides statistics about the number of tokens in the batch file.
 
@@ -190,32 +186,18 @@ def batch_request_tokens(args):
     print_batch_stats(number_of_tokens_messages)
 
 
-def calculate_image_tokens(width: int, height: int) -> int:
+def batch_tokens(args):
     """
-    Calculates number of tokens for image for OpenAI API.
-    Taken from: https://community.openai.com/t/how-do-i-calculate-image-tokens-in-gpt4-vision/492318/5
-
-    :param width: Number of pixels in width.
-    :param height: Number of pixels in height.
-    :return: Number of tokens.
+    Counts tokens in batch file.
     """
-    if width > 2048 or height > 2048:
-        aspect_ratio = width / height
-        if aspect_ratio > 1:
-            width, height = 2048, int(2048 / aspect_ratio)
-        else:
-            width, height = int(2048 * aspect_ratio), 2048
 
-    if width >= height and height > 768:
-        width, height = int((768 / height) * width), 768
-    elif height > width and width > 768:
-        width, height = 768, int((768 / width) * height)
+    token_counter = TokenCounter()
+    with open(args.file, mode='r') as f:
+        for i, line in enumerate(f):
+            record = json.loads(line)
+            token_counter(record)
 
-    tiles_width = ceil(width / 512)
-    tiles_height = ceil(height / 512)
-    total_tokens = 85 + 170 * (tiles_width * tiles_height)
-
-    return total_tokens
+    print(token_counter.token_count)
 
 
 def split_batch(args):
@@ -223,51 +205,17 @@ def split_batch(args):
     Splits batch file into smaller files.
     """
 
-    tokenizers = {}
     lines_cache = []
     number_of_tokens = 0
     file_cnt = 0
     output_path = Path(args.output)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    token_counter = TokenCounter()
     with open(args.file, mode='r') as f:
         for i, line in enumerate(f):
             record = json.loads(line)
-            model = record["body"]["model"]
-
-            if model not in tokenizers:
-                tokenizers[model] = tiktoken.encoding_for_model(model)
-
-            token_cnt = 0
-            for message in record["body"]["messages"]:
-                if isinstance(message["content"], list):
-                    # multi modal
-                    for sub_message in message["content"]:
-                        if sub_message["type"] == "image_url":
-                            # load image
-                            image = sub_message["image_url"]["url"]
-                            # link of base64 image
-                            if image.startswith("data:image/"):
-                                image = image.split(",")[1]
-                                # load base64 image
-                                image = Image.open(BytesIO(base64.b64decode(image)))
-                                token_cnt += calculate_image_tokens(image.width, image.height)
-                            elif image.startswith("http"):
-                                # download image
-                                r = requests.get(image, stream=True)
-                                if r.status_code == 200:
-                                    image = Image.open(BytesIO(r.content))
-                                    token_cnt += calculate_image_tokens(image.width, image.height)
-                                else:
-                                    raise ValueError(f"Failed to download image: {image} in record {record['custom_id']}")
-                            else:
-                                raise ValueError(f"Unknown image type: {image} in record {record['custom_id']}")
-                        elif sub_message["type"] == "text":
-                            token_cnt += len(tokenizers[model].encode(sub_message["text"], allowed_special="all"))
-                        else:
-                            raise ValueError(f"Unknown message type: {sub_message['type']} in record {record['custom_id']}")
-
-                else:
-                    token_cnt += len(tokenizers[model].encode(message["content"], allowed_special="all"))
+            token_cnt = token_counter(record)
 
             if number_of_tokens > 0 and number_of_tokens + token_cnt > args.max_tokens:
                 with open(output_path / f"batch_{file_cnt}.jsonl", mode='w') as out:
@@ -479,36 +427,31 @@ def main():
 
     ask_parser = subparsers.add_parser("create_batch_file",
                                        help="Creates batch file for OpenAI API. Results are printed to stdout.")
+    ask_parser.add_argument("-c", "--config", help="Path to the configuration file.")
     ask_parser.add_argument("--path", help="Path to data.", type=str, default=None)
-    ask_parser.add_argument("-c", "--config", help="Path to the configuration file.", default=None)
     ask_parser.set_defaults(func=create_batch_file)
-
-    batch_request_parser = subparsers.add_parser("batch_request", help="Sends requests to OpenAI API.")
-    batch_request_parser.add_argument("file", help="Path to the batch file.")
-    batch_request_parser.add_argument("-c", "--config", help="Path to the configuration file.", default=None)
-    batch_request_parser.add_argument("-l", "--line",
-                                      help="This allows to send only one request on given line number (starts from 0) from the batch file. Warning, this will use standard request.",
-                                      default=None, type=int)
-    batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved.",
-                                      default=None)
-    batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API.",
-                                      action="store_true")
-    batch_request_parser.add_argument("--reverse", help="Reverse the order of batch splits.", action="store_true")
-    batch_request_parser.add_argument("--cont",
-                                      help="Continue processing of the batch file. If the results file is specified, it will skip processing of completely processed batch files.",
-                                      action="store_true")
-    batch_request_parser.set_defaults(func=batch_request)
-
-    batch_request_tokens_parser = subparsers.add_parser("batch_request_tokens",
-                                                        help="Provides statistics about the number of tokens in the batch file, works only for openai models.")
-    batch_request_tokens_parser.add_argument("file", help="Path to the batch file.")
-    batch_request_tokens_parser.set_defaults(func=batch_request_tokens)
 
     split_batch_parser = subparsers.add_parser("split_batch", help="Splits batch file into smaller files.")
     split_batch_parser.add_argument("file", help="Path to the batch file.")
     split_batch_parser.add_argument("output", help="Path to the output folder.")
     split_batch_parser.add_argument("max_tokens", help="Maximum number of tokens in one file.", type=int)
     split_batch_parser.set_defaults(func=split_batch)
+
+    batch_request_parser = subparsers.add_parser("batch_request", help="Sends requests to OpenAI API.")
+    batch_request_parser.add_argument("file", help="Path to the batch file or directory with batch files.")
+    batch_request_parser.add_argument("-c", "--config", help="Path to the API configuration file.")
+    batch_request_parser.add_argument("-l", "--line",
+                                      help="This allows to send only one request on given line number (starts from 0) from the batch file. Warning, this will use standard request.",
+                                      default=None, type=int)
+    batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved.",
+                                      default=None)
+    batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API. Calls are always synchronous for Ollama API.",
+                                      action="store_true")
+    batch_request_parser.add_argument("--reverse", help="Reverse the order of batch splits.", action="store_true")
+    batch_request_parser.add_argument("--cont",
+                                      help="Continue processing of the batch file. If the results file is specified, it will skip processing of completely processed batch files.",
+                                      action="store_true")
+    batch_request_parser.set_defaults(func=batch_request)
 
     prompt_res_pair_parser = subparsers.add_parser("prompt_res_pair", help="Pairs prompt with response.")
     prompt_res_pair_parser.add_argument("prompts", help="Path to the batch file with prompts.")
@@ -523,6 +466,15 @@ def main():
     prompt_res_pair_parser.add_argument("-s", "--skip",
                                         help="Skip malformed records.", action="store_true")
     prompt_res_pair_parser.set_defaults(func=prompt_res_pair)
+
+    batch_request_tokens_parser = subparsers.add_parser("batch_stats",
+                                                        help="Provides statistics about the number of tokens in the batch file, works only for openai models.")
+    batch_request_tokens_parser.add_argument("file", help="Path to the batch file.")
+    batch_request_tokens_parser.set_defaults(func=batch_stats)
+
+    count_tokens_batch_parser = subparsers.add_parser("batch_tokens", help="Counts tokens in batch file, works only for openai models.")
+    count_tokens_batch_parser.add_argument("file", help="Path to the batch file.")
+    count_tokens_batch_parser.set_defaults(func=batch_tokens)
 
     create_config_parser = subparsers.add_parser("create_config", help="Creates configuration.")
     create_config_parser.add_argument("--path", help="Path to the configuration file.")

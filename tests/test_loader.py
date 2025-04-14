@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest import TestCase
 
-from openaiapicaller.loader import JSONLLoader, CSVLoader, HFLoader, HFImageLoader
+from aicaller.loader import JSONLLoader, CSVLoader, HFLoader, HFImageLoader
 
 SCRIPT_PATH = Path(__file__).parent
 FIXTURES_PATH = SCRIPT_PATH / "fixtures"

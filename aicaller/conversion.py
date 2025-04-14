@@ -5,8 +5,8 @@ from typing import Generator, Optional
 import jinja2
 from classconfig import ConfigurableValue, ConfigurableMixin, ConfigurableSubclassFactory
 
-from openaiapicaller.loader import Loader
-from openaiapicaller.sample_assembler import APISampleAssembler
+from aicaller.loader import Loader
+from aicaller.sample_assembler import APISampleAssembler
 
 
 class Convertor(ConfigurableMixin, ABC):

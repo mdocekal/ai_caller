@@ -3,25 +3,25 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openaiapicaller"
+name = "aicaller"
 dynamic = ["dependencies"]
-version = "0.0.1"
+version = "1.0.0"
 requires-python = ">=3.10"
 authors = [
   {name = "Martin Dočekal"},
 ]
-description = "Package for calling openai api on datasets."
+description = "Package for using API models. It is designed mainly for experimenting with various models. It allows to easily process Hugging Face datasets, or JSONL/CSV datasets, and send requests to OpenAI compatibles APIs with just using simple configuration files."
 readme = "README.md"
-keywords = ["openai", "api", "datasets"]
+keywords = ["openai", "ollama", "api", "datasets"]
 
 [project.urls]
-Repository = "https://github.com/DCGM/openai_api_caller"
+Repository = "https://github.com/mdocekal/ai_caller"
 
 [project.scripts]
-openaiapicaller = "openaiapicaller.__main__:main"
+aicaller = "aicaller.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["openaiapicaller*"]
+include = ["aicaller*"]
 exclude = ["tests*"]
 
 [tool.setuptools.dynamic]

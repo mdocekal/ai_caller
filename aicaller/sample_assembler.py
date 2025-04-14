@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import Generator, Union, Optional, Any, Sequence
 
 from classconfig import ConfigurableValue, ConfigurableSubclassFactory, ConfigurableFactory
-from classconfig.validators import StringValidator, AnyValidator, IsNoneValidator
+from classconfig.validators import StringValidator, AnyValidator, IsNoneValidator, ListOfTypesValidator
 from datasets import Dataset
 
-from openaiapicaller.few_shot_sampler import FewShotSampler
-from openaiapicaller.template import StringTemplate, Template
+from aicaller.few_shot_sampler import FewShotSampler
+from aicaller.template import StringTemplate, Template
 
 
 class APISampleAssembler(ABC):
@@ -21,8 +21,16 @@ class APISampleAssembler(ABC):
         voluntary=True
     )
 
-    def __init__(self, few_shot_sampler: Optional[FewShotSampler]):
+    id_fields: Optional[Sequence[str]] = ConfigurableValue(
+        "List of additional dataset fields to use for sample ids.",
+        user_default=None,
+        voluntary=True,
+        validator=AnyValidator([IsNoneValidator(), ListOfTypesValidator(str, allow_empty=True)]),
+    )
+
+    def __init__(self, few_shot_sampler: Optional[FewShotSampler], id_fields: Optional[Sequence[str]] = None):
         self.few_shot_sampler = few_shot_sampler
+        self.id_fields = id_fields
 
     @abstractmethod
     def assemble(self, dataset: Dataset, select: Optional[Sequence[int]] = None) -> Generator[tuple[Any, dict[str, Union[str, int]]], None, None]:
@@ -47,12 +55,13 @@ class TemplateBasedAssembler(APISampleAssembler, ABC):
     input_template: Template = ConfigurableSubclassFactory(Template, "Template for input assembly.",
                                                            user_default=StringTemplate)
 
-    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None):
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None,
+                 id_fields: Optional[Sequence[str]] = None):
         """
         Initializes the assembler.
 
         """
-        super().__init__(few_shot_sampler)
+        super().__init__(few_shot_sampler, id_fields)
         self.input_template = input_template
 
     def add_few_shot(self, sample: dict):
@@ -73,14 +82,16 @@ class TextDatasetAssembler(TemplateBasedAssembler):
     direct: Optional[str] = ConfigurableValue("Name of jsonl field that contains the sample. In that case, the template is not used.",
                                                 voluntary=True, validator=AnyValidator([IsNoneValidator(), StringValidator()]))
 
-    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None, direct: Optional[str] = None):
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None,
+                 id_fields: Optional[Sequence[str]] = None, direct: Optional[str] = None):
         """
         Initializes the assembler.
 
         """
         super().__init__(
             few_shot_sampler=few_shot_sampler,
-            input_template=input_template
+            input_template=input_template,
+            id_fields=id_fields
         )
         self.direct = direct
 
@@ -100,6 +111,11 @@ class TextDatasetAssembler(TemplateBasedAssembler):
         """
 
         for line_number, sample in enumerate(dataset):
+            sample_ids = {"line_number": line_number}
+            if self.id_fields is not None:
+                for field in self.id_fields:
+                    sample_ids[field] = sample[field]
+
             if select is not None and line_number not in select:
                 continue
             if self.direct:
@@ -108,14 +124,17 @@ class TextDatasetAssembler(TemplateBasedAssembler):
                 self.add_few_shot(sample)
                 sample = self.input_template.render(sample)
 
-            yield sample, {"line_number": line_number}
+            yield sample, sample_ids
 
 
 class ImageDatasetAssembler(TemplateBasedAssembler):
-    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None):
+    def __init__(self, input_template: Template, few_shot_sampler: Optional[FewShotSampler] = None,
+                 id_fields: Optional[Sequence[str]] = None):
+
         super().__init__(
             few_shot_sampler=few_shot_sampler,
-            input_template=input_template
+            input_template=input_template,
+            id_fields=id_fields
         )
 
     def assemble(self, dataset: Dataset, select: Optional[Sequence[int]] = None) -> Generator[tuple[Any, dict[str, Union[str, int]]], None, None]:
@@ -137,8 +156,13 @@ class ImageDatasetAssembler(TemplateBasedAssembler):
             dataset = dataset.select(select)
 
         for sample in dataset:
-            self.add_few_shot(sample)
-            yield self.input_template.render(sample), {
+            sample_ids = {
                 "image_path": sample["image"].filename,
                 "file_name": Path(sample["image"].filename).stem
             }
+            if self.id_fields is not None:
+                for field in self.id_fields:
+                    sample_ids[field] = sample[field]
+
+            self.add_few_shot(sample)
+            yield self.input_template.render(sample), sample_ids

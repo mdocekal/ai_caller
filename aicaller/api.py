@@ -2,14 +2,14 @@ import json
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, Union, Generator
+from typing import Optional, Generator
 
 from classconfig import ConfigurableValue
 from classconfig.validators import StringValidator
+from ollama import Client as OllamaClient
 from openai import OpenAI, APIError, RateLimitError
 from openai.types.batch import Batch
 from tqdm import tqdm
-from ollama import Client as OllamaClient
 
 
 class API(ABC):
@@ -27,7 +27,7 @@ class API(ABC):
         desc="Interval in seconds between sending requests in process_request_file.",
         user_default=1,
         voluntary=True,
-        validator=lambda x: x is None or x > 0)
+        validator=lambda x: x is None or x >= 0)
     base_url: Optional[str] = ConfigurableValue(desc="Base URL for API.", user_default=None, voluntary=True)
 
     def __init__(self, api_key: str, pool_interval: int = 300, base_url: Optional[str] = None, process_request_file_interval: int = 1):
@@ -127,7 +127,7 @@ class OpenAPI(API):
             lines = f.readlines()
         for i, line in enumerate(tqdm(lines, desc="Sending requests")):
             record = json.loads(line)
-            if i > 0:
+            if i > 0 and self.process_request_file_interval > 0:
                 time.sleep(self.process_request_file_interval)
 
             while True:
@@ -214,7 +214,7 @@ class OpenAPI(API):
 
 class OllamaAPI(API):
 
-    def __init__(self, api_key: str, pool_interval: int = 300, base_url: Optional[str] = None, process_request_file_interval: int = 1, options: Optional[dict] = None):
+    def __init__(self, api_key: str, pool_interval: int = 300, base_url: Optional[str] = None, process_request_file_interval: int = 1):
         super().__init__(api_key, pool_interval, base_url, process_request_file_interval)
         self.client = OllamaClient(host=base_url)
 
@@ -243,7 +243,7 @@ class OllamaAPI(API):
             lines = f.readlines()
         for i, line in enumerate(tqdm(lines, desc="Sending requests")):
             record = json.loads(line)
-            if i > 0:
+            if i > 0 and self.process_request_file_interval > 0:
                 time.sleep(self.process_request_file_interval)
 
             response = self.client.chat(**record["body"])

@@ -3,10 +3,10 @@ from unittest import TestCase, mock
 
 from datasets import load_dataset
 
-from openaiapicaller.few_shot_sampler import FewShotSampler
-from openaiapicaller.loader import HFLoader
-from openaiapicaller.sample_assembler import TextDatasetAssembler, ImageDatasetAssembler
-from openaiapicaller.template import StringTemplate
+from aicaller.few_shot_sampler import FewShotSampler
+from aicaller.loader import HFLoader
+from aicaller.sample_assembler import TextDatasetAssembler, ImageDatasetAssembler
+from aicaller.template import StringTemplate
 
 SCRIPT_PATH = Path(__file__).parent
 FIXTURES_PATH = SCRIPT_PATH / "fixtures"
@@ -45,7 +45,7 @@ class TestTextDatasetAssembler(TestCase):
         self.assertEqual("This is the text of 5. sample.", samples[1][0])
         self.assertEqual("This is the text of 9. sample.", samples[2][0])
 
-    @mock.patch("openaiapicaller.few_shot_sampler.random.sample")
+    @mock.patch("aicaller.few_shot_sampler.random.sample")
     def test_assembler_few_shot(self, mock_random_sample):
         mock_random_sample.return_value = [0, 5, 9]
         loader = HFLoader(
@@ -77,7 +77,7 @@ class TestImageDatasetAssembler(TestCase):
         self.dataset = load_dataset("imagefolder", data_dir=str(FIXTURES_PATH / "dataset_images"), split="train")
 
     def test_assemble(self):
-        assembler = ImageDatasetAssembler(StringTemplate("This is the image of {{file_name}}."), split="train")
+        assembler = ImageDatasetAssembler(StringTemplate("This is the image of {{file_name}}."))
 
         samples = list(assembler.assemble(self.dataset))
 
@@ -87,7 +87,7 @@ class TestImageDatasetAssembler(TestCase):
         self.assertEqual("train_2", samples[2][1]["file_name"])
 
     def test_assemble_select(self):
-        assembler = ImageDatasetAssembler(StringTemplate("This is the image of {{file_name}}."), split="train")
+        assembler = ImageDatasetAssembler(StringTemplate("This is the image of {{file_name}}."))
 
         samples = list(assembler.assemble(self.dataset, select=[1]))
         self.assertEqual(1, len(samples))

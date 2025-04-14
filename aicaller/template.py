@@ -9,7 +9,7 @@ from classconfig.transforms import EnumTransformer
 from classconfig.validators import ListOfTypesValidator, StringValidator, AnyValidator, IsNoneValidator
 from segmentedstring import SegmentedString
 
-from openaiapicaller.utils import is_url, obtain_base64_image, detect_image_format
+from aicaller.utils import is_url, obtain_base64_image, detect_image_format
 
 
 class Jinja2EnvironmentSingletonFactory:

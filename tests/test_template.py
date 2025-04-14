@@ -6,7 +6,7 @@ Created on 17.02.25
 """
 from pathlib import Path
 from unittest import TestCase
-from openaiapicaller.template import StringTemplate, SegmentedStringTemplate, OpenAIMessageBuilder, OpenAITextContent, \
+from aicaller.template import StringTemplate, SegmentedStringTemplate, OpenAIMessageBuilder, OpenAITextContent, \
     OpenAIImageContent, OpenAIMultiModalMessageBuilder, OllamaMessageBuilder, MessagesTemplate
 
 SCRIPT_PATH = Path(__file__).parent

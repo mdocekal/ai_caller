@@ -10,6 +10,39 @@ from ollama import Client as OllamaClient
 from openai import OpenAI, APIError, RateLimitError
 from openai.types.batch import Batch
 from tqdm import tqdm
+from pydantic import BaseModel
+
+
+class APIResponse(BaseModel, ABC):
+    """
+    Represents the response from an API call.
+    """
+    body: dict
+
+    @property
+    @abstractmethod
+    def structured(self) -> bool:
+        """
+        Indicates whether the response is structured.
+        """
+        ...
+
+    @abstractmethod
+    def get_raw_content(self, choice: Optional[int] = None) -> str:
+        """
+        Returns the raw content of the response.
+
+        :param choice: Optional index of the choice to return content from.
+        """
+        ...
+
+class APIOutput(BaseModel):
+    """
+    Represents the output of an API call.
+    """
+    custom_id: str
+    response: APIResponse
+    error: Optional[str] = None
 
 
 class API(ABC):
@@ -37,7 +70,7 @@ class API(ABC):
         self.base_url = base_url
 
     @abstractmethod
-    def process_line(self, path_to_file: str, line: int) -> dict:
+    def process_line(self, path_to_file: str, line: int) -> APIOutput:
         """
         Processes a line from the file.
 
@@ -48,7 +81,7 @@ class API(ABC):
         ...
 
     @abstractmethod
-    def process_request_file(self, path_to_file: str) -> Generator[dict, None, None]:
+    def process_request_file(self, path_to_file: str) -> Generator[APIOutput, None, None]:
         """
         Simulates the batch request, but uses normal synchronous API calls.
 
@@ -68,7 +101,7 @@ class API(ABC):
         ...
 
     @abstractmethod
-    def batch_request_and_wait(self, path_to_file: str) -> str:
+    def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
         """
         Sends requests to API and waits for the batch request to finish.
 
@@ -92,6 +125,24 @@ class API(ABC):
         """
         ...
 
+class APIResponseOpenAI(APIResponse):
+
+    @property
+    def structured(self) -> bool:
+        return self.body.get("response_format") is not None
+
+    def get_raw_content(self, choice: Optional[int] = None) -> str:
+        """
+        Returns the raw content of the response.
+
+        :param choice: Optional index of the choice to return content from.
+        :return: Raw content of the response.
+        """
+        if choice is None:
+            choice = 0
+
+        return self.body["choices"][choice]["message"]["content"]
+
 
 class OpenAPI(API):
     """
@@ -102,7 +153,7 @@ class OpenAPI(API):
         super().__init__(api_key, pool_interval, base_url, process_request_file_interval)
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 
-    def process_line(self, path_to_file: str, line: int) -> dict:
+    def process_line(self, path_to_file: str, line: int) -> APIOutput:
         with open(path_to_file, mode='r') as f:
             for i, l in enumerate(f):
                 if i == line:
@@ -114,13 +165,13 @@ class OpenAPI(API):
 
         response = self.client.chat.completions.create(**body)
 
-        return {
-            "custom_id": json.loads(line)["custom_id"],
-            "response": {
-                "body": response.model_dump()
-            },
-            "error": None
-        }
+        return APIOutput(
+            custom_id=json.loads(line)["custom_id"],
+            response=APIResponseOpenAI(
+                body=response.model_dump()
+            ),
+            error=None
+        )
 
     def process_request_file(self, path_to_file: str) -> Generator[dict, None, None]:
         with open(path_to_file, "r") as f:
@@ -139,15 +190,15 @@ class OpenAPI(API):
                           file=sys.stderr)
                     time.sleep(self.pool_interval)
 
-            yield {
-                "custom_id": record["custom_id"],
-                "response": {
-                    "body": response.model_dump()
-                },
-                "error": None
-            }
+            yield APIOutput(
+                custom_id=record["custom_id"],
+                response=APIResponseOpenAI(
+                    body=response.model_dump()
+                ),
+                error=None
+            )
 
-    def batch_request(self, path_to_file: str) -> dict:
+    def batch_request(self, path_to_file: str) -> Batch:
         """
         Sends requests to OpenAI API.
 
@@ -165,7 +216,7 @@ class OpenAPI(API):
             completion_window="24h"
         )
 
-    def batch_request_and_wait(self, path_to_file: str) -> str:
+    def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
         """
         Sends requests to OpenAI API and waits for the batch request to finish.
 
@@ -180,7 +231,19 @@ class OpenAPI(API):
         while True:
             try:
                 response = self.batch_request(path_to_file)
-                return self.wait_for_batch_request(response)
+                file_content = self.wait_for_batch_request(response)
+                content = []
+                for line in file_content.splitlines():
+                    record = json.loads(line)
+                    content.append(APIOutput(
+                        custom_id=record["custom_id"],
+                        response=APIResponse(
+                            body=record["response"]
+                        ),
+                        error=None
+                    ))
+
+                return content
             except APIError as e:
                 if any("Enqueued token limit reached for" in err.message for err in e.body.errors.data):
                     print("Enqueued token limit reached. Waiting for the pool interval.", flush=True,
@@ -212,13 +275,26 @@ class OpenAPI(API):
         raise APIError("Batch request failed with status: " + batch.status, None, body=batch)
 
 
+class APIResponseOllama(APIResponse):
+
+    @property
+    def structured(self) -> bool:
+        return "format" in self.body
+
+    def get_raw_content(self, choice: Optional[int] = None) -> str:
+        if choice is not None:
+            raise ValueError("Ollama API does not support multiple choices.")
+
+        return self.body["message"]["content"]
+
+
 class OllamaAPI(API):
 
     def __init__(self, api_key: str, pool_interval: int = 300, base_url: Optional[str] = None, process_request_file_interval: int = 1):
         super().__init__(api_key, pool_interval, base_url, process_request_file_interval)
         self.client = OllamaClient(host=base_url)
 
-    def process_line(self, path_to_file: str, line: int) -> dict:
+    def process_line(self, path_to_file: str, line: int) -> APIOutput:
         with open(path_to_file, mode='r') as f:
             for i, l in enumerate(f):
                 if i == line:
@@ -226,19 +302,19 @@ class OllamaAPI(API):
                     break
             else:
                 raise ValueError(f"Line {line} not found.")
-            body = json.loads(line)["body"]
+            record = json.loads(line)
+            body = record["body"]
 
-        response = self.client.chat(**body)
+        response = self.client.chat(**body).model_dump()
+        return APIOutput(
+            custom_id=record["custom_id"],
+            response=APIResponseOllama(
+                body=response
+            ),
+            error=None
+        )
 
-        return {
-            "custom_id": json.loads(line)["custom_id"],
-            "response": {
-                "body": response.model_dump()
-            },
-            "error": None
-        }
-
-    def process_request_file(self, path_to_file: str) -> Generator[dict, None, None]:
+    def process_request_file(self, path_to_file: str) -> Generator[APIOutput, None, None]:
         with open(path_to_file, "r") as f:
             lines = f.readlines()
         for i, line in enumerate(tqdm(lines, desc="Sending requests")):
@@ -248,13 +324,13 @@ class OllamaAPI(API):
 
             response = self.client.chat(**record["body"])
 
-            yield {
-                "custom_id": record["custom_id"],
-                "response": {
-                    "body": response.model_dump()
-                },
-                "error": None
-            }
+            yield APIOutput(
+                custom_id=record["custom_id"],
+                response=APIResponseOllama(
+                    body=response.model_dump()
+                ),
+                error=None
+            )
 
     def batch_request(self, path_to_file: str) -> dict:
         raise NotImplementedError("Batch request is not supported by Ollama API.")

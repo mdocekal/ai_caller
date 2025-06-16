@@ -34,7 +34,7 @@ class ToOpenAIBatchFile(Convertor):
     id_format: str = ConfigurableValue(
         "Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.",
         user_default="request-{{index}}", voluntary=True)
-    model: str = ConfigurableValue("OpenAI model name.", user_default="gpt-4o-mini")
+    model: str = ConfigurableValue("OpenAI model name.", user_default="llama3.2:latest")
     temperature: float = ConfigurableValue("Temperature of the model.", user_default=1.0)
     logprobs: bool = ConfigurableValue("Whether to return log probabilities of the output tokens or not. If true, returns the log probabilities of each output token returned in the content of message.",
                                        user_default=False, voluntary=True)

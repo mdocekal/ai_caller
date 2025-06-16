@@ -13,15 +13,15 @@ from typing import Sequence, Optional, TextIO
 import inquirer
 import numpy as np
 import tiktoken
-from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory
-from classconfig.classes import subclasses
+from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory, ConfigurableValue
+from classconfig.classes import subclasses, sub_cls_from_its_name
 from tqdm import tqdm
 
 from aicaller.api import API
 from aicaller.conversion import Convertor
 from aicaller.loader import Loader
 from aicaller.sample_assembler import APISampleAssembler, TemplateBasedAssembler
-from aicaller.template import Template
+from aicaller.template import Template, StringTemplate
 from aicaller.utils import read_potentially_malformed_json_result, TokenCounter
 
 
@@ -42,6 +42,15 @@ class CreateBatchWorkflow(ConfigurableMixin):
             print(req)
 
 
+class InputTemplateConfig(ConfigurableMixin):
+    """
+    Configuration for input template.
+    """
+
+    input_template: Template = ConfigurableSubclassFactory(Template, "Template for input assembly.",
+                                                           user_default=StringTemplate)
+
+
 def create_batch_file(args):
     """
     Creates batch file for OpenAI API. Results are printed to stdout.
@@ -51,19 +60,48 @@ def create_batch_file(args):
 
     config_path = Path(args.config)
     config = Config(CreateBatchWorkflow).load(config_path)
+    if args.input_template_config is not None:
+        # check whether given convertor allows to override input_template
+        if "sample_assembler" not in config["convertor"]["config"]:
+            raise ValueError("The convertor does not support overriding input_template.")
+
+        try:
+            _ = sub_cls_from_its_name(TemplateBasedAssembler, config["convertor"]["config"]["sample_assembler"]["cls"])
+        except ValueError:
+            raise ValueError("The convertor does not support overriding input_template.")
+
+        # load input template from the given file
+        input_config_path = Path(args.input_template_config)
+        input_template_config = Config(InputTemplateConfig).load(input_config_path)
+
+        config["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["cls"] = input_template_config["input_template"]["cls"]
+        config["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["config"] = input_template_config["input_template"]["config"]
+
+        config.untransformed["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["cls"] = input_template_config.untransformed["input_template"]["cls"]
+        config.untransformed["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["config"] = input_template_config.untransformed["input_template"]["config"]
+
     workflow = ConfigurableFactory(CreateBatchWorkflow).create(config)
     workflow(proc_path=args.path)
 
 
-def load_requests_ids(file: str) -> set[str]:
+def load_requests_ids(p: str, expected_ids: None | set[str] = None) -> set[str]:
     """
-    Loads request ids from the file.
+    Loads request ids from the file or directory.
 
-    :param file: Path to the file.
+    :param p: Path to the file or directory
+    :param expected_ids: Set of expected ids is used for getting ids from directory.
     :return: Set of request ids.
     """
-    with open(file, mode='r') as f:
-        return {json.loads(l)["custom_id"] for l in f}
+
+    if p.endswith(os.sep) or os.altsep and p.endswith(os.altsep):
+        if expected_ids is None:
+            raise ValueError("Expected ids must be provided when processing directory.")
+        p = Path(p)
+        return {i for i in expected_ids if (p / f"{i}.jsonl").exists() or (p / f"{i}.txt").exists()}
+
+    else:
+        with open(p, mode='r') as f:
+            return {json.loads(l)["custom_id"] for l in f}
 
 
 class APISelector(ConfigurableMixin):
@@ -80,47 +118,71 @@ def batch_request(args):
     config = Config(APISelector).load(config_path)
     api = ConfigurableFactory(APISelector).create(config).api
 
-    if args.line is None:
+    if args.line is not None:
+        print(json.dumps(api.process_line(args.file, args.line), ensure_ascii=False, separators=(',', ':')))
+        return
+
+    if args.results is None:
+        raise ValueError("Results file must be specified when sending batch requests.")
+
+    p = Path(args.file)
+
+    res_dir = None
+    if args.results is not None and args.results.endswith(os.sep) or os.altsep and args.results.endswith(os.altsep):
+        res_dir = Path(args.results)
+        if not res_dir.exists():
+            res_dir.mkdir(parents=True)
+
+    with open(args.results, mode=('a' if args.cont else 'w')) if args.results is not None and res_dir is None else nullcontext() as res_f:
         if args.results is None:
-            raise ValueError("Results file must be specified when sending batch requests.")
+            res_f = sys.stdout
 
-        p = Path(args.file)
-        with open(args.results, mode=('a' if args.cont else 'w')) if args.results is not None else nullcontext() as res_f:
-            file_paths = list(p.glob("*.jsonl")) if p.is_dir() else [p]
+        file_paths = list(p.glob("*.jsonl")) if p.is_dir() else [p]
 
-            finished_requests = set()
+        # Load finished requests ids if continuing
+        finished_requests = set()
 
-            if args.cont:
+        if args.cont:
+            if res_dir is not None:
+                all_ids = set()
+                for f in file_paths:
+                    all_ids |= load_requests_ids(str(f))
+
+                finished_requests = load_requests_ids(args.results, expected_ids=all_ids)
+            else:
                 finished_requests = load_requests_ids(args.results)
 
-            if args.reverse:
-                file_paths = reversed(file_paths)
+        if args.reverse:
+            file_paths = reversed(file_paths)
 
-            for f in tqdm(file_paths, desc="Processing split files", unit="file"):
-                if finished_requests:
-                    batch_ids = load_requests_ids(f)
-                    if batch_ids.issubset(finished_requests):
-                        continue
+        for f in tqdm(file_paths, desc="Processing split files", unit="file"):
+            if finished_requests:
+                batch_ids = load_requests_ids(str(f))
+                if batch_ids.issubset(finished_requests):
+                    continue
 
-                if args.synchronous:
-                    for result in api.process_request_file(f):
-                        if finished_requests and result["custom_id"] in finished_requests:
-                            continue
-                        res_f.write(json.dumps(result, ensure_ascii=False, separators=(',', ':')) + "\n")
-                else:
-                    res = api.batch_request_and_wait(f)
+            res = api.process_request_file(str(f)) if args.synchronous else api.batch_request_and_wait(str(f))
+            for api_output in res:
+                if finished_requests and api_output.custom_id in finished_requests:
+                    continue
 
-                    if finished_requests and len(batch_ids & finished_requests) > 0:
-                        # remove already processed requests
-                        for line in res.splitlines():
-                            if json.loads(line)["custom_id"] in finished_requests:
-                                continue
-                            res_f.write(line+"\n")
+                if args.only_output:
+                    if res_dir is None:
+                        result_to_write = json.dumps({
+                            "custom_id": api_output.custom_id,
+                            "content": api_output.response.get_raw_content(),
+                        }, ensure_ascii=False, separators=(',', ':'))
                     else:
-                        res_f.write(res)
-            return
+                        result_to_write = api_output.response.get_raw_content()
+                else:
+                    result_to_write = api_output.model_dump_json()
 
-    print(json.dumps(api.process_line(args.file, args.line), ensure_ascii=False, separators=(',', ':')))
+                if res_dir is None:
+                    print(result_to_write, file=res_f)
+                else:
+                    suffix = ".json" if api_output.response.structured else ".txt"
+                    with open(res_dir / (api_output.custom_id + suffix), "w") as res_f_separate:
+                        print(result_to_write, file=res_f_separate)
 
 
 def print_histogram(data: Sequence[int], bins: int = 10, max_bars: int = 10, line_prefix="\t"):
@@ -428,6 +490,8 @@ def main():
     ask_parser = subparsers.add_parser("create_batch_file",
                                        help="Creates batch file for OpenAI API. Results are printed to stdout.")
     ask_parser.add_argument("-c", "--config", help="Path to the configuration file.")
+    ask_parser.add_argument("-i", "--input_template_config", help="Path to the input prompt configuration file. This will load input_template from separate file and overwrite the one in the config. Might not be available for all convertors.",
+                            type=str, default=None)
     ask_parser.add_argument("--path", help="Path to data.", type=str, default=None)
     ask_parser.set_defaults(func=create_batch_file)
 
@@ -443,7 +507,7 @@ def main():
     batch_request_parser.add_argument("-l", "--line",
                                       help="This allows to send only one request on given line number (starts from 0) from the batch file. Warning, this will use standard request.",
                                       default=None, type=int)
-    batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved.",
+    batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved. If directory it will create a separate file for each request with the same name as custom_id. It wil use extension .txt for simple output and .json for structured output.",
                                       default=None)
     batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API. Calls are always synchronous for Ollama API.",
                                       action="store_true")
@@ -451,6 +515,9 @@ def main():
     batch_request_parser.add_argument("--cont",
                                       help="Continue processing of the batch file. If the results file is specified, it will skip processing of completely processed batch files.",
                                       action="store_true")
+    batch_request_parser.add_argument("--only_output",
+                                        help="If specified, will write only model output (0. choice) to results file, without metadata.",
+                                        action="store_true")
     batch_request_parser.set_defaults(func=batch_request)
 
     prompt_res_pair_parser = subparsers.add_parser("prompt_res_pair", help="Pairs prompt with response.")

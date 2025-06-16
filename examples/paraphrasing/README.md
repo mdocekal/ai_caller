@@ -18,7 +18,7 @@ Using the guide we will select the following options:
 * TextDatasetAssembler
 * StringTemplate
 
-This will create a configuration file and we will edit it to look like this:
+This will create a configuration file, and we will edit it to look like this:
 ```yaml
 convertor:  # Convertor to batch file.
   cls: ToOpenAIBatchFile  # name of class that is subclass of Convertor

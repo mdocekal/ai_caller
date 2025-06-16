@@ -3,7 +3,7 @@ from unittest import TestCase
 
 from aicaller.loader import JSONLLoader, CSVLoader, HFLoader, HFImageLoader
 
-SCRIPT_PATH = Path(__file__).parent
+SCRIPT_PATH = Path(__file__).parent.resolve()
 FIXTURES_PATH = SCRIPT_PATH / "fixtures"
 
 

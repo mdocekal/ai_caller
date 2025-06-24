@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aicaller"
 dynamic = ["dependencies"]
-version = "1.0.1"
-requires-python = ">=3.10"
+version = "1.1.0"
+requires-python = ">=3.12"
 authors = [
   {name = "Martin Dočekal"},
 ]
-description = "Package for using API models. It is designed mainly for experimenting with various models. It allows to easily process Hugging Face datasets, or JSONL/CSV datasets, and send requests to OpenAI compatibles APIs with just using simple configuration files."
+description = "Package for using API models. It is designed mainly for experimenting with various models. It allows to easily process Hugging Face datasets, or JSONL/CSV datasets, and send requests to Ollama and OpenAI compatibles APIs with just using simple configuration files."
 readme = "README.md"
 keywords = ["openai", "ollama", "api", "datasets"]
 

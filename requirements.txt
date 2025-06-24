@@ -5,9 +5,10 @@ inquirer~=3.4.0
 tiktoken~=0.8.0
 tqdm~=4.66.5
 numpy~=1.26.4
-datasets
+datasets~=3.6.0
 json-repair
 ollama~=0.4.7
 segmentedstring~=1.0.1
 pillow~=10.4.0
 requests~=2.32.3
+pydantic~=2.11.7

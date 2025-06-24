@@ -181,23 +181,29 @@ aicaller create_config --path api.yaml
 
 Select the following options:
 * API
-* OpenAPI or OllamaAPI (depending on which API you want to use)
+* OpenAPIFactory or OllamaAPIFactory (depending on which API you want to use)
 
 This will create a configuration file that looks like this:
 ```yaml
 api:  # API type
-  cls: OpenAPI  # name of class that is subclass of API
+  cls: OpenAPIFactory  # name of class that is subclass of APIFactory
   config: # configuration for defined class
     api_key:  # API key.
-    pool_interval: 300 # Interval in seconds for checking the status of the batch request.
-    process_request_file_interval: 1 # Interval in seconds between sending requests in process_request_file.
     base_url: # Base URL for API.
+    id_field: custom_id # Field name that contains the request ID.
+    pool_interval: 300 # Interval in seconds for checking the status of the batch request.
+    process_requests_interval: 1 # Interval in seconds between sending requests when processed synchronously.
+    concurrency: 10 # Maximum number of concurrent requests to the API. This is used with async processing.
 ```
 Fill it with your API key and change other fields as needed.
 
-When you are done, you have several options for how to send the batch file to the API. You can send it as a batch request (supported by OpenAI), or you can send it in synchronous mode (`--synchronous`), which will send requests one by one and wait for the response for each of them.
+When you are done, you have several options for how to send the batch file to the API:
 
-We will use the synchronous mode for this example, so we run the following command:
+  * batch request (supported by OpenAI)
+  * synchronous mode (`--synchronous`), which will send requests one by one and wait for the response for each of them.
+  * asynchronous mode (`--asynchronous`), which will send requests in parallel and wait for the responses to come back. You can set `concurrency` in the API configuration file to limit the number of concurrent requests.
+
+We will use the `--synchronous` mode for this example:
 ```bash
 aicaller batch_request batch_openai.jsonl --config api.yaml --synchronous --results results_openai/ --only_output
 ```

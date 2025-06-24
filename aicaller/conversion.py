@@ -1,10 +1,11 @@
-import json
 from abc import abstractmethod, ABC
 from typing import Generator, Optional
 
 import jinja2
 from classconfig import ConfigurableValue, ConfigurableMixin, ConfigurableSubclassFactory
 
+from aicaller.api.base import APIRequest
+from aicaller.api.base import OpenAIAPIRequestBody, OllamaAPIRequestBody
 from aicaller.loader import Loader
 from aicaller.sample_assembler import APISampleAssembler
 
@@ -47,7 +48,7 @@ class ToOpenAIBatchFile(Convertor):
         self.jinja = jinja2.Environment()
         self.jinja_id_template = self.jinja.from_string(self.id_format)
 
-    def build_request(self, sample: list[dict], custom_id_fields: dict) -> dict:
+    def build_request(self, sample: list[dict], custom_id_fields: dict) -> APIRequest:
         """
         Builds a request for the API.
 
@@ -59,24 +60,21 @@ class ToOpenAIBatchFile(Convertor):
         if isinstance(sample, str):
             sample = [{"role": "user", "content": sample}]
 
-        request = {
-            "custom_id": self.jinja_id_template.render(custom_id_fields),
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": {
-                "model": self.model,
-                "messages": sample,
-                "temperature": self.temperature,
-                "logprobs": self.logprobs,
-                "max_completion_tokens": self.max_completion_tokens
-            }
-        }
-        if self.response_format is not None:
-            request["body"]["response_format"] = self.response_format
-
+        body = OpenAIAPIRequestBody(
+            model=self.model,
+            messages=sample,
+            temperature=self.temperature,
+            logprobs=self.logprobs,
+            max_completion_tokens=self.max_completion_tokens,
+            response_format=self.response_format
+        )
+        request = APIRequest(
+            custom_id=self.jinja_id_template.render(custom_id_fields),
+            body=body
+        )
         return request
 
-    def convert(self, p: Optional[str]= None) -> Generator[str, None, None]:
+    def convert(self, p: Optional[str] = None) -> Generator[str, None, None]:
         """
         Converts IR annotations to OpenAI batch file.
 
@@ -89,7 +87,7 @@ class ToOpenAIBatchFile(Convertor):
                 sample=sample,
                 custom_id_fields={**sample_ids, "index": i}
             )
-            yield json.dumps(request, ensure_ascii=False)
+            yield request.model_dump_json()
 
 
 class ToOllamaBatchFile(Convertor):
@@ -100,7 +98,7 @@ class ToOllamaBatchFile(Convertor):
     id_format: str = ConfigurableValue(
         "Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.",
         user_default="request-{{index}}", voluntary=True)
-    model: str = ConfigurableValue("OpenAI model name.", user_default="gpt-4o-mini")
+    model: str = ConfigurableValue("model name", user_default="llama3.2:latest")
     options: dict = ConfigurableValue(
         "additional model parameters listed in the documentation for the Modelfile such as temperature",
         user_default={"temperature": 1.0, "num_ctx": 2048, "num_predict": 128}
@@ -112,7 +110,7 @@ class ToOllamaBatchFile(Convertor):
         self.jinja = jinja2.Environment()
         self.jinja_id_template = self.jinja.from_string(self.id_format)
 
-    def build_request(self, sample: list[dict], custom_id_fields: dict) -> dict:
+    def build_request(self, sample: list[dict], custom_id_fields: dict) -> APIRequest:
         """
         Builds a request for the API.
 
@@ -124,18 +122,16 @@ class ToOllamaBatchFile(Convertor):
         if isinstance(sample, str):
             sample = [{"role": "user", "content": sample}]
 
-        request = {
-            "custom_id": self.jinja_id_template.render(custom_id_fields),
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": {
-                "model": self.model,
-                "messages": sample,
-                "options": self.options
-            }
-        }
-        if self.format is not None:
-            request["body"]["format"] = self.format
+        body = OllamaAPIRequestBody(
+            model=self.model,
+            messages=sample,
+            options=self.options,
+            format=self.format
+        )
+        request = APIRequest(
+            custom_id=self.jinja_id_template.render(custom_id_fields),
+            body=body
+        )
 
         return request
 
@@ -153,4 +149,4 @@ class ToOllamaBatchFile(Convertor):
                 sample=sample,
                 custom_id_fields={**sample_ids, "index": i}
             )
-            yield json.dumps(request, ensure_ascii=False)
+            yield request.model_dump_json()

@@ -13,11 +13,12 @@ from typing import Sequence, Optional, TextIO
 import inquirer
 import numpy as np
 import tiktoken
-from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory, ConfigurableValue
+from classconfig import Config, ConfigurableFactory, ConfigurableMixin, ConfigurableSubclassFactory
 from classconfig.classes import subclasses, sub_cls_from_its_name
 from tqdm import tqdm
 
-from aicaller.api import API
+from aicaller.api import APIFactory
+from aicaller.api.base import APIRequest, APIOutput
 from aicaller.conversion import Convertor
 from aicaller.loader import Loader
 from aicaller.sample_assembler import APISampleAssembler, TemplateBasedAssembler
@@ -91,21 +92,27 @@ def load_requests_ids(p: str, expected_ids: None | set[str] = None) -> set[str]:
     :param p: Path to the file or directory
     :param expected_ids: Set of expected ids is used for getting ids from directory.
     :return: Set of request ids.
+    :raises ValueError: If there are duplicate ids in the file.
     """
 
     if p.endswith(os.sep) or os.altsep and p.endswith(os.altsep):
         if expected_ids is None:
             raise ValueError("Expected ids must be provided when processing directory.")
         p = Path(p)
-        return {i for i in expected_ids if (p / f"{i}.jsonl").exists() or (p / f"{i}.txt").exists()}
+        return {i for i in expected_ids if (p / f"{i}.json").exists() or (p / f"{i}.txt").exists()}
 
     else:
         with open(p, mode='r') as f:
-            return {json.loads(l)["custom_id"] for l in f}
+            all_ids = [json.loads(l)["custom_id"] for l in f]
+            all_ids_cnt = len(all_ids)
+            all_ids = set(all_ids)
+            if all_ids_cnt != len(all_ids):
+                raise ValueError(f"At least one duplicate request id found in the file {p}.")
+            return all_ids
 
 
 class APISelector(ConfigurableMixin):
-    api: API = ConfigurableSubclassFactory(API, "API type")
+    api: APIFactory = ConfigurableSubclassFactory(APIFactory, "API type")
 
 
 def batch_request(args):
@@ -116,14 +123,16 @@ def batch_request(args):
     """
     config_path = Path(args.config)
     config = Config(APISelector).load(config_path)
-    api = ConfigurableFactory(APISelector).create(config).api
+    api_factory: APIFactory = ConfigurableFactory(APISelector).create(config).api
+
+    api = api_factory.create_async() if args.asynchronous else api_factory.create()
 
     if args.line is not None:
         print(json.dumps(api.process_line(args.file, args.line), ensure_ascii=False, separators=(',', ':')))
         return
 
     if args.results is None:
-        raise ValueError("Results file must be specified when sending batch requests.")
+        raise ValueError("Results file/folder must be specified when sending batch requests.")
 
     p = Path(args.file)
 
@@ -156,14 +165,19 @@ def batch_request(args):
             file_paths = reversed(file_paths)
 
         for f in tqdm(file_paths, desc="Processing split files", unit="file"):
+            batch_ids = load_requests_ids(str(f))
             if finished_requests:
-                batch_ids = load_requests_ids(str(f))
                 if batch_ids.issubset(finished_requests):
                     continue
 
-            res = api.process_request_file(str(f)) if args.synchronous else api.batch_request_and_wait(str(f))
-            for api_output in res:
+            if args.synchronous or args.asynchronous:
+                res = api.process_request_file(str(f), finished_requests)
+            else:
+                res = api.batch_request_and_wait(str(f))
+
+            for api_output in tqdm(res, desc="Processing requests", unit="request", total=len(batch_ids), initial=len(finished_requests)):
                 if finished_requests and api_output.custom_id in finished_requests:
+                    # for batch requests, else finished requests are already skipped
                     continue
 
                 if args.only_output:
@@ -375,7 +389,7 @@ def create_empty_config_for_api(args, f: TextIO):
     :param f: File to write the configuration to.
     """
     print("creating config for API")
-    conv_subclasses = [c.__name__ for c in subclasses(API)]
+    conv_subclasses = [c.__name__ for c in subclasses(APIFactory)]
     api = inquirer.prompt([
         inquirer.List('api',
                       message="Choose api",
@@ -436,7 +450,10 @@ def prompt_res_pair(args):
             while line := response_file.readline():
                 record = json.loads(line)
                 if json_fields is not None:
-                    content = record["response"]["body"]["choices"][0]["message"]["content"].strip()
+                    if "content" in record:
+                        content = record["content"].strip()
+                    else:
+                        content = APIOutput.model_validate(record).response.get_raw_content()
 
                     if args.skip:
                         try:
@@ -451,7 +468,7 @@ def prompt_res_pair(args):
                 id_2_response_file_offset[record["custom_id"]] = pbar.n
                 pbar.update(response_file.tell() - pbar.n)
 
-        fieldnames = ["prompt"]
+        fieldnames = ["messages"]
         if json_fields is None:
             fieldnames.append("response")
         else:
@@ -468,16 +485,21 @@ def prompt_res_pair(args):
 
             response_file.seek(id_2_response_file_offset[prompt["custom_id"]])
             response = json.loads(response_file.readline())
+            if "content" in response:
+                response = response["content"].strip()
+            else:
+                response = APIOutput.model_validate(response).response.get_raw_content()
 
             if json_fields is not None:
-                parsed_json = read_potentially_malformed_json_result(response["response"]["body"]["choices"][0]["message"]["content"])
+                parsed_json = read_potentially_malformed_json_result(response)
                 res = {f: parsed_json[f] for f in json_fields}
-                res["prompt"] = prompt["body"]["messages"][0]["content"]
             else:
                 res = {
-                    "prompt": prompt["body"]["messages"][0]["content"],
-                    "response": response["response"]["body"]["choices"][0]["message"]["content"]
+                    "response": response,
                 }
+
+            messages = APIRequest.model_validate(prompt).body.messages
+            res["messages"] = json.dumps(messages)
             dict_writer.writerow(res)
 
 
@@ -501,7 +523,7 @@ def main():
     split_batch_parser.add_argument("max_tokens", help="Maximum number of tokens in one file.", type=int)
     split_batch_parser.set_defaults(func=split_batch)
 
-    batch_request_parser = subparsers.add_parser("batch_request", help="Sends requests to OpenAI API.")
+    batch_request_parser = subparsers.add_parser("batch_request", help="Sends batch requests to OpenAI API.")
     batch_request_parser.add_argument("file", help="Path to the batch file or directory with batch files.")
     batch_request_parser.add_argument("-c", "--config", help="Path to the API configuration file.")
     batch_request_parser.add_argument("-l", "--line",
@@ -509,8 +531,11 @@ def main():
                                       default=None, type=int)
     batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved. If directory it will create a separate file for each request with the same name as custom_id. It wil use extension .txt for simple output and .json for structured output.",
                                       default=None)
-    batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API. Calls are always synchronous for Ollama API.",
-                                      action="store_true")
+    sync_async_group_batch_request_parser = batch_request_parser.add_mutually_exclusive_group()
+    sync_async_group_batch_request_parser.add_argument("-a", "--asynchronous", help="Use asynchronous API for batch requests.",
+                                                        action="store_true")
+    sync_async_group_batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API.",
+                                                       action="store_true")
     batch_request_parser.add_argument("--reverse", help="Reverse the order of batch splits.", action="store_true")
     batch_request_parser.add_argument("--cont",
                                       help="Continue processing of the batch file. If the results file is specified, it will skip processing of completely processed batch files.",

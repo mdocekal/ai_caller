@@ -105,18 +105,21 @@ aicaller create_config --path api_config.yaml
 
 Using the guide we will select the following options:
 * API
-* OpenAPI
+* OpenAPIFactory
 
 This will create a configuration file like this:
 ```yaml
 
 api:  # API type
-  cls: OpenAPI  # name of class that is subclass of API
+  cls: OpenAPIFactory  # name of class that is subclass of APIFactory
   config: # configuration for defined class
     api_key:  # API key.
-    pool_interval: 300 # Interval in seconds for checking the status of the batch request.
-    process_request_file_interval: 1 # Interval in seconds between sending requests in process_request_file.
     base_url: # Base URL for API.
+    id_field: custom_id # Field name that contains the request ID.
+    pool_interval: 300 # Interval in seconds for checking the status of the batch request.
+    process_requests_interval: 1 # Interval in seconds between sending requests when processed synchronously.
+    concurrency: 10 # Maximum number of concurrent requests to the API. This is used with async processing.
+
 ```
 
 After filling in the API key, we can send the requests to the API using the following command:

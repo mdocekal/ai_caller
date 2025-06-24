@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest import TestCase, mock
+from unittest.mock import Mock, MagicMock
 
 from aicaller.few_shot_sampler import FewShotSampler
 from aicaller.loader import JSONLLoader
@@ -13,11 +14,11 @@ class TestFewShotSampler(TestCase):
     def setUp(self):
         self.loader = JSONLLoader(path_to=str(FIXTURES_PATH / "dataset.jsonl"))
 
-    @mock.patch("aicaller.few_shot_sampler.random.sample")
-    def test_3_shot(self, mock_random_sample):
-        mock_random_sample.return_value = [0, 5, 9]
+    def test_3_shot(self):
 
         sampler = FewShotSampler(load=self.loader)
+        sampler.r = MagicMock()
+        sampler.r.sample.return_value = [0, 5, 9]
 
         indices, samples = sampler.sample(3)
 

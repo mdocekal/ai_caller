@@ -45,9 +45,7 @@ class TestTextDatasetAssembler(TestCase):
         self.assertEqual("This is the text of 5. sample.", samples[1][0])
         self.assertEqual("This is the text of 9. sample.", samples[2][0])
 
-    @mock.patch("aicaller.few_shot_sampler.random.sample")
-    def test_assembler_few_shot(self, mock_random_sample):
-        mock_random_sample.return_value = [0, 5, 9]
+    def test_assembler_few_shot(self):
         loader = HFLoader(
             path_to=str(FIXTURES_PATH / "dataset"),
             config="short",
@@ -57,12 +55,15 @@ class TestTextDatasetAssembler(TestCase):
 {% for sample in few_shot %}{{sample['text']}}
 {% endfor %}
 """
-        assembler = TextDatasetAssembler(
-            StringTemplate(template),
-            few_shot_sampler=FewShotSampler(
+        few_shot_sampler = FewShotSampler(
                 load=loader,
                 n=3
             )
+        few_shot_sampler.r = mock.MagicMock()
+        few_shot_sampler.r.sample.return_value = [0, 5, 9]
+        assembler = TextDatasetAssembler(
+            StringTemplate(template),
+            few_shot_sampler=few_shot_sampler
         )
 
         samples = list(assembler.assemble(self.dataset))

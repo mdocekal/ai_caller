@@ -1,0 +1,8 @@
+api:  # API type
+  cls: OpenAPIFactory  # name of class that is subclass of APIFactory
+  config: # configuration for defined class
+    api_key:  # API key.
+    base_url: # Base URL for API.
+    pool_interval: 300 # Interval in seconds for checking the status of the batch request.
+    process_requests_interval: 1 # Interval in seconds between sending requests when processed synchronously.
+    concurrency: 10 # Maximum number of concurrent requests to the API. This is used with async processing.

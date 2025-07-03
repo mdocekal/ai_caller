@@ -1,0 +1,34 @@
+convertor:  # Convertor to batch file.
+  cls: ToOllamaBatchFile  # name of class that is subclass of Convertor
+  config: # configuration for defined class
+    loader:  # Loader for the data.
+      cls: HFImageLoader  # name of class that is subclass of Loader
+      config: # configuration for defined class
+        path_to: data # Path to the data.
+        config: # Configuration name.
+        split: train # Split of the dataset.
+    id_format: "{{file_name}}" # Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.
+    model: llama3.2-vision # OpenAI model name.
+    options: # additional model parameters listed in the documentation for the Modelfile such as temperature
+      temperature: 1.0
+      num_ctx: 2048
+      num_predict: 128
+    sample_assembler: # Sample assembler for API request.
+      cls: ImageDatasetAssembler  # name of class that is subclass of APISampleAssembler
+      config: # configuration for defined class
+        input_template: # Template for input assembly.
+          cls: MessagesTemplate  # name of class that is subclass of Template
+          config: # configuration for defined class
+            messages:  # List of message builders.
+              - cls: OllamaMessageBuilder
+                config:
+                  role: user
+                  content: |
+                    Describe the image in a few sentences. Describe the image itself (photo, drawing, graphs), possibly its style and historic period. Describe the image content, objects, actions, location, names.
+                  
+                    Use the following metadata to help you:
+                      document title: {{ doc_title }}
+                      document author: {{ author }}
+                      tags: {{ tags | join(", ") }}
+                  images: [ "{{image.filename}}" ]
+    format: # Format of the response.

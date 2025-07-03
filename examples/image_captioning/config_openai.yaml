@@ -1,0 +1,39 @@
+convertor:  # Convertor to batch file.
+  cls: ToOpenAIBatchFile  # name of class that is subclass of Convertor
+  config: # configuration for defined class
+    loader:  # Loader for the data.
+      cls: HFImageLoader  # name of class that is subclass of Loader
+      config: # configuration for defined class
+        path_to: data # Path to the data.
+        config: # Configuration name.
+        split: train # Split of the dataset.
+    id_format: "{{file_name}}" # Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.
+    model: gpt-4o-mini # OpenAI model name.
+    temperature: 1.0 # Temperature of the model.
+    logprobs: false # Whether to return log probabilities of the output tokens or not. If true, returns the log probabilities of each output token returned in the content of message.
+    max_completion_tokens: 1024 # Maximum number of tokens generated.
+    sample_assembler: # Sample assembler for API request.
+      cls: ImageDatasetAssembler  # name of class that is subclass of APISampleAssembler
+      config: # configuration for defined class
+        input_template: # Template for input assembly.
+          cls: MessagesTemplate  # name of class that is subclass of Template
+          config: # configuration for defined class
+            messages:   # List of message builders.
+              - cls: OpenAIMultiModalMessageBuilder
+                config:
+                  role: user
+                  content:
+                    - cls: OpenAITextContent  # name of class that is subclass of Content
+                      config: # configuration for defined class
+                        text: |
+                          Describe the image in a few sentences. Describe the image itself (photo, drawing, graphs), possibly its style and historic period. Describe the image content, objects, actions, location, names.
+                        
+                          Use the following metadata to help you:
+                            document title: {{ doc_title }}
+                            document author: {{ author }}
+                            tags: {{ tags | join(", ") }}
+                    - cls: OpenAIImageContent  # name of class that is subclass of Content
+                      config: # configuration for defined class
+                        url: "{{image.filename}}"  # Text of the message.
+                        detail: LOW
+    response_format: # Format of the response.

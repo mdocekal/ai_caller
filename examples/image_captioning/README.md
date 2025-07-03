@@ -2,6 +2,21 @@
 
 This example demonstrates how to process images and generate captions. We will use toy data stored in `data` folder in this example directory.
 
+## TL;DR
+Here is a quick overview of the steps to follow:
+1. Use the provided config (`config_openai.yaml` or `config_ollama.yaml`) for creating a batch of API requests or create your own configuration file (see [Usage](#usage) section).
+2. Create a batch of requests using this command:
+   ```bash
+   aicaller create_batch_file --config config_openai.yaml > batch_openai.jsonl
+   ```
+3. Create (see [Sending the batch file](#sending-the-batch-file) section) or edit the API configuration file (`api.yaml`) to include your API key and other settings.
+4. Send the batch file to the API using this command:
+   ```bash
+   aicaller batch_request batch_openai.jsonl --config api.yaml --synchronous --results results_openai/ --only_output
+   ```
+   You can also use `--asynchronous` flag to send requests in parallel or omit the argument entirely to send requests in batch mode (supported by OpenAI, see more at [https://platform.openai.com/docs/guides/batch](https://platform.openai.com/docs/guides/batch)).
+
+
 ## Data
 The `data` folder contains images that will be used for captioning. It also contains a `metadata.jsonl` file that provides metadata for each image. Each metadata record contains file name and additional information such as the title of the document from which the image comes from.
 

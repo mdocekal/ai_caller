@@ -176,10 +176,13 @@ def batch_request(args):
                 res = api.batch_request_and_wait(str(f))
 
             for api_output in tqdm(res, desc="Processing requests", unit="request", total=len(batch_ids), initial=len(finished_requests)):
+                api_output: APIOutput
                 if finished_requests and api_output.custom_id in finished_requests:
                     # for batch requests, else finished requests are already skipped
                     continue
-
+                if api_output.error is not None:
+                    logging.error(f"Error for request {api_output.custom_id}: {api_output.error}")
+                    continue
                 if args.only_output:
                     if res_dir is None:
                         result_to_write = json.dumps({
@@ -422,14 +425,14 @@ def create_config(args):
     config_type = inquirer.prompt([
         inquirer.List('config_type',
                       message="Which configuration do you want to create?",
-                      choices=["create batch workflow", "API"],
+                      choices=["create batch workflow (configuration for creating API requests)", "API (configuration of API key, concurrency, base URL, etc.)"],
                       )
     ])["config_type"]
 
     with (sys.stdout if args.path is None else open(args.path, mode='w')) as f:
-        if config_type == "create batch workflow":
+        if config_type == "create batch workflow (configuration for creating API requests)":
             create_empty_config_for_create_batch_workflow(args, f)
-        elif config_type == "API":
+        elif config_type == "API (configuration of API key, concurrency, base URL, etc.)":
             create_empty_config_for_api(args, f)
         else:
             raise ValueError(f"Unknown configuration type: {config_type}")

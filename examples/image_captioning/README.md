@@ -128,6 +128,28 @@ input_template: # Template for input assembly.
                 url: "{{image.filename}}"  # Text of the message.
                 detail: LOW
 ```
+The original configuration may remain the same, or you can simplify it by leaving the `input_template` field empty:
+```yaml
+convertor:  # Convertor to batch file.
+  cls: ToOpenAIBatchFile  # name of class that is subclass of Convertor
+  config: # configuration for defined class
+    loader:  # Loader for the data.
+      cls: HFImageLoader  # name of class that is subclass of Loader
+      config: # configuration for defined class
+        path_to: data # Path to the data.
+        config: # Configuration name.
+        split: train # Split of the dataset.
+    id_format: "{{file_name}}" # Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.
+    model: gpt-4o-mini # OpenAI model name.
+    temperature: 1.0 # Temperature of the model.
+    logprobs: false # Whether to return log probabilities of the output tokens or not. If true, returns the log probabilities of each output token returned in the content of message.
+    max_completion_tokens: 1024 # Maximum number of tokens generated.
+    sample_assembler: # Sample assembler for API request.
+      cls: ImageDatasetAssembler  # name of class that is subclass of APISampleAssembler
+      config: # configuration for defined class
+        input_template: # The input template will be loaded from the separate configuration file.
+    response_format: # Format of the response.
+```
 
 You can then create the batch file using the following command:
 ```bash

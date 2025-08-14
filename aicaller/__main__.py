@@ -75,6 +75,10 @@ def create_batch_file(args):
         input_config_path = Path(args.input_template_config)
         input_template_config = Config(InputTemplateConfig).load(input_config_path)
 
+        if config["convertor"]["config"]["sample_assembler"]["config"]["input_template"] is None:
+            config["convertor"]["config"]["sample_assembler"]["config"]["input_template"] = {}
+            config.untransformed["convertor"]["config"]["sample_assembler"]["config"]["input_template"] = {}
+
         config["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["cls"] = input_template_config["input_template"]["cls"]
         config["convertor"]["config"]["sample_assembler"]["config"]["input_template"]["config"] = input_template_config["input_template"]["config"]
 

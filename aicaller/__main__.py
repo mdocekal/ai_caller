@@ -106,7 +106,7 @@ def load_requests_ids(p: str, expected_ids: None | set[str] = None) -> set[str]:
         return {i for i in expected_ids if (p / f"{i}.json").exists() or (p / f"{i}.txt").exists()}
 
     else:
-        with open(p, mode='r') as f:
+        with open(p, mode='r', encoding="utf-8") as f:
             all_ids = [json.loads(l)["custom_id"] for l in f]
             all_ids_cnt = len(all_ids)
             all_ids = set(all_ids)
@@ -146,7 +146,7 @@ def batch_request(args):
         if not res_dir.exists():
             res_dir.mkdir(parents=True)
 
-    with open(args.results, mode=('a' if args.cont else 'w')) if args.results is not None and res_dir is None else nullcontext() as res_f:
+    with open(args.results, mode=('a' if args.cont else 'w'), encoding="utf-8") if args.results is not None and res_dir is None else nullcontext() as res_f:
         if args.results is None:
             res_f = sys.stdout
 
@@ -202,7 +202,7 @@ def batch_request(args):
                     print(result_to_write, file=res_f)
                 else:
                     suffix = ".json" if api_output.response.structured else ".txt"
-                    with open(res_dir / (api_output.custom_id + suffix), "w") as res_f_separate:
+                    with open(res_dir / (api_output.custom_id + suffix), "w", encoding="utf-8") as res_f_separate:
                         print(result_to_write, file=res_f_separate)
 
 
@@ -246,7 +246,7 @@ def batch_stats(args):
     tokenizers = {}
     number_of_tokens = []
     number_of_tokens_messages = []
-    with open(args.file, mode='r') as f:
+    with open(args.file, mode='r', encoding="utf-8") as f:
         for line in f:
             record = json.loads(line)
             model = record["body"]["model"]
@@ -275,7 +275,7 @@ def batch_tokens(args):
     """
 
     token_counter = TokenCounter()
-    with open(args.file, mode='r') as f:
+    with open(args.file, mode='r', encoding="utf-8") as f:
         for i, line in enumerate(f):
             record = json.loads(line)
             token_counter(record)
@@ -295,13 +295,13 @@ def split_batch(args):
     output_path.mkdir(parents=True, exist_ok=True)
 
     token_counter = TokenCounter()
-    with open(args.file, mode='r') as f:
+    with open(args.file, mode='r', encoding="utf-8") as f:
         for i, line in enumerate(f):
             record = json.loads(line)
             token_cnt = token_counter(record)
 
             if number_of_tokens > 0 and number_of_tokens + token_cnt > args.max_tokens:
-                with open(output_path / f"batch_{file_cnt}.jsonl", mode='w') as out:
+                with open(output_path / f"batch_{file_cnt}.jsonl", mode='w', encoding="utf-8") as out:
                     out.writelines(lines_cache)
                 lines_cache = []
                 number_of_tokens = 0
@@ -311,7 +311,7 @@ def split_batch(args):
             number_of_tokens += token_cnt
 
         if len(lines_cache) > 0:
-            with open(output_path / f"batch_{file_cnt}.jsonl", mode='w') as out:
+            with open(output_path / f"batch_{file_cnt}.jsonl", mode='w', encoding="utf-8") as out:
                 out.writelines(lines_cache)
 
 
@@ -433,7 +433,7 @@ def create_config(args):
                       )
     ])["config_type"]
 
-    with (sys.stdout if args.path is None else open(args.path, mode='w')) as f:
+    with (sys.stdout if args.path is None else open(args.path, mode='w', encoding="utf-8")) as f:
         if config_type == "create batch workflow (configuration for creating API requests)":
             create_empty_config_for_create_batch_workflow(args, f)
         elif config_type == "API (configuration of API key, concurrency, base URL, etc.)":
@@ -449,7 +449,7 @@ def prompt_res_pair(args):
     :param args: Parsed arguments.
     """
 
-    with open(args.prompts, mode='r') as prompt_file, open(args.response, mode='r') as response_file:
+    with open(args.prompts, mode='r', encoding="utf-8") as prompt_file, open(args.response, mode='r', encoding="utf-8") as response_file:
         # read response ids
         id_2_response_file_offset = {}
         json_fields = args.json if args.json is not None else None

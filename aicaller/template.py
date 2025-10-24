@@ -24,7 +24,9 @@ class Jinja2EnvironmentSingletonFactory:
             self.jinja_env = jinja2.Environment()
             # default tojson doesn't allow to use all the arguments of json.dumps
             self.jinja_env.filters["tojson"] = json.dumps
+            self.jinja_env.filters["fromjson"] = json.loads
             self.jinja_env.filters["filter_dict"] = lambda d, keys: {k: v for k, v in d.items() if k in keys}
+            self.jinja_env.filters["model_dump_json"] = lambda obj: obj.model_dump_json()
 
 
 class Template(ABC):

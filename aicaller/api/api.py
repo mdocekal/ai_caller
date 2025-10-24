@@ -3,6 +3,7 @@ import sys
 import time
 from abc import abstractmethod
 from collections.abc import Iterable
+from io import StringIO, BytesIO
 from typing import Generator, Container, Optional
 
 from ollama import Client as OllamaClient
@@ -132,6 +133,7 @@ class OpenAPI(API):
     """
     Handles requests to the OpenAI API.
     """
+    body_arguments_blacklist: set[str] = {"type"}
 
     def __post_init__(self):
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -162,6 +164,26 @@ class OpenAPI(API):
                 error=str(e)
             )
 
+    def convert_batch_file(self, path_to_file: str) -> BytesIO:
+        """
+        Converts a file to OpenAI batch format.
+
+        The reason behind this method is that OpenAI batch API does not support some fields that are present
+        in APIRequest, such as 'type' in the body.
+
+        :param path_to_file: Path to the file with requests.
+        :return: BytesIO object with converted requests.
+        """
+        output = BytesIO()
+        with open(path_to_file, "r") as f:
+            for line in f:
+                record = APIRequest.model_validate_json(line.strip())
+                output.write(record.model_dump_json(
+                    exclude={"body": self.body_arguments_blacklist}
+                ).encode() + b"\n")
+        output.seek(0)
+        return output
+
     def batch_request(self, path_to_file: str) -> Batch:
         """
         Sends requests to OpenAI API.
@@ -171,7 +193,7 @@ class OpenAPI(API):
         """
 
         batch_input_file = self.client.files.create(
-            file=open(path_to_file, "rb"),
+            file=self.convert_batch_file(path_to_file),
             purpose="batch"
         )
         return self.client.batches.create(
@@ -180,7 +202,7 @@ class OpenAPI(API):
             completion_window="24h"
         )
 
-    def read_batch_file(self, path_to_file: str) -> dict[APIRequest]:
+    def read_batch_file(self, path_to_file: str) -> dict[str, APIRequest]:
         """
         Reads requests from a batch file.
 
@@ -227,12 +249,14 @@ class OpenAPI(API):
                         error=None
                     ))
 
-                    return content
+                return content
             except APIError as e:
-                if any("Enqueued token limit reached for" in err.message for err in e.body.errors.data):
+                if "Enqueued token limit reached for" in e.message:
                     print("Enqueued token limit reached. Waiting for the pool interval.", flush=True,
                           file=sys.stderr)
                     time.sleep(self.pool_interval)
+                else:
+                    raise e
 
     def wait_for_batch_request(self, response: Batch) -> str:
         """

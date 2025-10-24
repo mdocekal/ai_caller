@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Literal, Union
+from typing import Optional, Literal, Union, Type
 
 from classconfig import ConfigurableValue, ConfigurableMixin
 from classconfig.validators import StringValidator, MinValueIntegerValidator
@@ -54,7 +54,7 @@ class OpenAIAPIRequestBody(APIRequestBody):
     temperature: float  # Temperature for the model
     logprobs: bool  # Whether to return log probabilities
     max_completion_tokens: int  # Maximum number of tokens to generate
-    response_format: Optional[dict] = None  # Format of the response, if any
+    response_format: Optional[dict | Type[BaseModel]] = None  # Format of the response, if any
 
     @property
     def structured(self) -> bool:
@@ -67,7 +67,7 @@ class OllamaAPIRequestBody(APIRequestBody):
     """
     type: Literal["ollama"] = "ollama"  # Type of the API request
     options: dict  # Options for the model, such as temperature, max tokens, etc.
-    format: Optional[dict] = None  # Format of the response, if any
+    format: Optional[dict | Type[BaseModel]] = None  # Format of the response, if any
 
     @property
     def structured(self) -> bool:
@@ -79,6 +79,8 @@ class APIRequest(BaseModel):
     Represents a request to an API.
     """
     custom_id: str  # Custom ID for the request
+    method: Literal["POST"] = "POST"  # HTTP method for the request
+    url: str = "/v1/chat/completions"  # URL endpoint for the request
     body: Union[OpenAIAPIRequestBody, OllamaAPIRequestBody] = Field(discriminator='type')
 
 

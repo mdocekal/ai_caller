@@ -132,7 +132,7 @@ def batch_request(args):
     api = api_factory.create_async() if args.asynchronous else api_factory.create()
 
     if args.line is not None:
-        print(json.dumps(api.process_line(args.file, args.line), ensure_ascii=False, separators=(',', ':')))
+        print(api.process_line(args.file, args.line).model_dump_json())
         return
 
     if args.results is None:
@@ -534,7 +534,7 @@ def main():
     batch_request_parser.add_argument("file", help="Path to the batch file or directory with batch files.")
     batch_request_parser.add_argument("-c", "--config", help="Path to the API configuration file.")
     batch_request_parser.add_argument("-l", "--line",
-                                      help="This allows to send only one request on given line number (starts from 0) from the batch file. Warning, this will use standard request.",
+                                      help="This allows to send only one request on given line number (starts from 0) from the batch file. Warning, this will always print whole api output at the stdout.",
                                       default=None, type=int)
     batch_request_parser.add_argument("-r", "--results", help="Path to the file where the results should be saved. If directory it will create a separate file for each request with the same name as custom_id. It wil use extension .txt for simple output and .json for structured output.",
                                       default=None)

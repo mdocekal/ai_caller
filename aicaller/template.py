@@ -11,6 +11,8 @@ from segmentedstring import SegmentedString
 
 from aicaller.utils import is_url, obtain_base64_image, detect_image_format
 
+from google.genai import types as genai_types
+
 
 class Jinja2EnvironmentSingletonFactory:
     """
@@ -271,6 +273,64 @@ class OllamaMessageBuilder(MessageBuilder):
         }
         if self.images:
             message["images"] = [jinja_image.render(data) for jinja_image in self.jinja_images]
+        return message
+
+
+class GoogleGenAIMessageBuilder(MessageBuilder):
+    """
+    Builder for GoogleGenAI chat message.
+
+    GoogleGenAI uses a 'parts' array format where each part can be text or an image.
+    Images are represented as PIL Image objects or base64-encoded data.
+    """
+
+    role: str = ConfigurableValue("Role of the message. Such as 'system', 'user', 'model' (not 'assistant').",
+                                  validator=StringValidator())
+    content: str = ConfigurableValue("Jinja2 template for text content of the message.", validator=StringValidator())
+    images: Optional[list[str]] = ConfigurableValue("Jinja2 templates for paths to images.",
+                                                    voluntary=True,
+                                                    validator=AnyValidator([IsNoneValidator(), ListOfTypesValidator(str, allow_empty=True)]))
+
+    def __init__(self, role: str, content: str, images: Optional[list[str]] = None):
+        self.role = role
+        self.content = content
+        self.images = images
+
+        self.jinja = Jinja2EnvironmentSingletonFactory().jinja_env
+        self.jinja_template = self.jinja.from_string(content)
+        if images:
+            self.jinja_images = [self.jinja.from_string(image) for image in images]
+
+    def render(self, data: dict[str, Any]) -> dict[str, Any]:
+        # GoogleGenAI expects 'parts' array with text and optional images
+        parts = []
+
+        # Add text content
+        text_content = self.jinja_template.render(data)
+        if text_content:
+            parts.append(text_content)
+
+        # Add images if present
+        if self.images:
+            for jinja_image in self.jinja_images:
+                image_path = jinja_image.render(data)
+
+                image_format = detect_image_format(image_path)
+                mime_type = {
+                    "png": "image/png",
+                    "jpeg": "image/jpeg",
+                    "jpg": "image/jpeg",
+                    "webp": "image/webp",
+                    "gif": "image/gif"
+                }.get(image_format, f"image/{image_format}")
+
+                parts.append((mime_type, image_path))
+
+        message = {
+            "role": self.role,
+            "parts": parts
+        }
+
         return message
 
 

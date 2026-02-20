@@ -74,6 +74,19 @@ class OllamaAPIRequestBody(APIRequestBody):
         return self.format is not None
 
 
+class GoogleGenAIAPIRequestBody(APIRequestBody):
+    """
+    Represents the body of an GoogleGenAI API request.
+    """
+    type: Literal["google_gen_ai"] = "google_gen_ai"  # Type of the API request
+    options: dict  # Options for the model, such as temperature, max tokens, etc.
+    format: Optional[dict | Type[BaseModel]] = None  # Format of the response, if any
+
+    @property
+    def structured(self) -> bool:
+        return self.format is not None
+
+
 class APIRequest(BaseModel):
     """
     Represents a request to an API.
@@ -81,7 +94,7 @@ class APIRequest(BaseModel):
     custom_id: str  # Custom ID for the request
     method: Literal["POST"] = "POST"  # HTTP method for the request
     url: str = "/v1/chat/completions"  # URL endpoint for the request
-    body: Union[OpenAIAPIRequestBody, OllamaAPIRequestBody] = Field(discriminator='type')
+    body: Union[OpenAIAPIRequestBody, OllamaAPIRequestBody, GoogleGenAIAPIRequestBody] = Field(discriminator='type')
 
 
 class APIResponse(BaseModel, ABC):
@@ -127,12 +140,22 @@ class APIResponseOllama(APIResponse):
         return self.body["message"]["content"]
 
 
+class APIResponseGoogleGenAI(APIResponse):
+    type: Literal["google_gen_ai"] = "google_gen_ai"
+
+    def get_raw_content(self, choice: Optional[int] = None) -> str:
+        if choice is not None:
+            raise ValueError("Google GenAI API does not support multiple choices.")
+
+        return self.body["text"]
+
+
 class APIOutput(BaseModel):
     """
     Represents the output of an API call.
     """
     custom_id: str
-    response: Optional[Union[APIResponseOpenAI, APIResponseOllama]] = Field(None, discriminator='type')
+    response: Optional[Union[APIResponseOpenAI, APIResponseOllama, APIResponseGoogleGenAI]] = Field(None, discriminator='type')
     error: Optional[str] = None
 
 

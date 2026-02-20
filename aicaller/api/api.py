@@ -3,15 +3,20 @@ import sys
 import time
 from abc import abstractmethod
 from collections.abc import Iterable
-from io import StringIO, BytesIO
+from io import BytesIO
 from typing import Generator, Container, Optional
 
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai.types import GenerateContentResponse
 from ollama import Client as OllamaClient
 from openai import OpenAI, APIError, RateLimitError
 from openai.types.batch import Batch
+from pydantic import ValidationError
 
 from aicaller.api import APIOutput, APIResponseOpenAI, APIResponseOllama
-from aicaller.api.base import APIBase, APIRequest
+from aicaller.api.base import APIBase, APIRequest, APIResponseGoogleGenAI
+from aicaller.api.utils import GoogleGenAIAPIMixin
 
 
 class API(APIBase):
@@ -76,7 +81,8 @@ class API(APIBase):
             for line in f:
                 yield APIRequest.model_validate_json(line)
 
-    def process_request_file(self, path_to_file: str, skip: Optional[Container[str]] = None) -> Generator[APIOutput, None, None]:
+    def process_request_file(self, path_to_file: str, skip: Optional[Container[str]] = None) -> Generator[
+        APIOutput, None, None]:
         """
         Simulates the batch request, but uses normal synchronous API calls.
 
@@ -315,3 +321,218 @@ class OllamaAPI(API):
 
     def wait_for_batch_request(self, response: Batch) -> str:
         raise NotImplementedError("Batch request is not supported by Ollama API.")
+
+
+class GoogleGenAIAPI(API, GoogleGenAIAPIMixin):
+
+    def __post_init__(self):
+        if self.base_url is not None:
+            raise ValueError("Custom base URL is not supported by Google GenAI API.")
+
+        self.client = genai.Client(api_key=self.api_key)
+
+    def process_single_request(self, request: APIRequest) -> APIOutput:
+        try:
+            while True:
+                try:
+                    raw_response = self.client.models.generate_content(
+                        model=request.body.model,
+                        contents=self.get_conversion_history(request),
+                        config=self.get_config(request)
+                    )
+                    break
+                except genai_errors.APIError as e:
+                    if e.code == 503:
+                        print(f"Got 503 UNAVAILABLE error: {e.message}", flush=True,
+                              file=sys.stderr)
+                        time.sleep(self.pool_interval)
+
+            response = raw_response.model_dump()
+            response["text"] = raw_response.text
+
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=APIResponseGoogleGenAI(
+                    body=response,
+                    structured=request.body.structured
+                ),
+                error=None
+            )
+        except Exception as e:
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=None,
+                error=str(e)
+            )
+
+    def convert_batch_file(self, path_to_file: str) -> tuple[BytesIO, str]:
+        """
+        Converts a file to Google GenAI batch format (JSONL).
+
+        :param path_to_file: Path to the file with requests.
+        :return: BytesIO object with converted requests and the model name used in the batch.
+        """
+
+        first_model = None
+
+        output = BytesIO()
+        with open(path_to_file, "r") as f:
+            for line in f:
+                record = APIRequest.model_validate_json(line.strip())
+
+                if first_model is None:
+                    first_model = record.body.model
+                elif record.body.model != first_model:
+                    raise ValueError(
+                        f"All requests in a batch must use the same model. Found {record.body.model}, expected {first_model}.")
+                config = self.get_config(record)
+                google_request = {
+                    "contents": [
+                        c.model_dump(exclude_defaults=True) for c in self.get_conversion_history(record)
+                    ],
+                    "generation_config":
+                        config.model_dump(exclude_defaults=True, exclude={"system_instruction"}) if config else {}
+                }
+
+                if config and config.system_instruction:
+                    google_request["system_instruction"] = config.system_instruction.model_dump(exclude_defaults=True)
+
+                batch_item = {
+                    "key": record.custom_id,
+                    "request": google_request
+                }
+                output.write(json.dumps(batch_item).encode() + b"\n")
+        output.seek(0)
+        return output, first_model
+
+    def batch_request(self, path_to_file: str) -> genai.types.BatchJob:
+        """
+        Sends requests to Google GenAI API.
+
+        :param path_to_file: Path to the file with requests.
+        :return: Batch job object
+        """
+        converted_batch, model_name = self.convert_batch_file(path_to_file)
+
+        # Upload the file
+        uploaded_file = self.client.files.upload(
+            file=converted_batch,
+            config=genai.types.UploadFileConfig(mime_type='jsonl')
+        )
+
+        # Create the batch job
+        batch_job = self.client.batches.create(
+            model=model_name,
+            src=uploaded_file.name
+        )
+        return batch_job
+
+    def read_batch_file(self, path_to_file: str) -> dict[str, APIRequest]:
+        """
+        Reads requests from a batch file.
+
+        :param path_to_file: Path to the file with requests.
+        :return: Dictionary of requests indexed by custom_id
+        """
+
+        with open(path_to_file, "r") as f:
+            samples = {}
+            for line in f:
+                record = APIRequest.model_validate_json(line.strip())
+                if record.custom_id in samples:
+                    raise ValueError(f"Duplicate custom_id found: {record.custom_id}")
+                samples[record.custom_id] = record
+        return samples
+
+    def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
+        """
+        Sends requests to Google GenAI API and waits for the batch request to finish.
+
+        :param path_to_file: Path to the file with requests.
+        :return: List of APIOutput objects.
+        :raises APIError: If the batch request failed.
+        """
+
+        while True:
+            try:
+                batch_samples = self.read_batch_file(path_to_file)
+                response = self.batch_request(path_to_file)
+                file_content = self.wait_for_batch_request(response)
+                content = []
+
+                for line in file_content.splitlines():
+                    raw_record = json.loads(line)
+                    key = raw_record["key"]
+                    if "error" in raw_record:
+                        content.append(APIOutput(
+                            custom_id=key,
+                            response=None,
+                            error=raw_record["error"]["message"]
+                        ))
+                        continue
+                    try:
+                        raw_response = GenerateContentResponse.model_validate(raw_record["response"])
+                        response = raw_response.model_dump()
+                        response["text"] = raw_response.text
+
+                        content.append(APIOutput(
+                            custom_id=key,
+                            response=APIResponseGoogleGenAI(
+                                body=response,
+                                structured=batch_samples[key].body.structured
+                            ),
+                            error=None
+                        ))
+                    except ValidationError as e:
+                        content.append(APIOutput(
+                            custom_id=key,
+                            response=None,
+                            error=f"Failed to parse response for key {key}: {str(e)}"
+                        ))
+
+                return content
+            except APIError as e:
+                if "Enqueued token limit reached for" in e.message:
+                    print("Enqueued token limit reached. Waiting for the pool interval.", flush=True,
+                          file=sys.stderr)
+                    time.sleep(self.pool_interval)
+                else:
+                    raise e
+
+    def wait_for_batch_request(self, batch_job: genai.types.BatchJob) -> str:
+        """
+        Waits for the batch request to finish and downloads the results.
+
+        :param batch_job: Batch job object.
+        :return: Content of the output file.
+        :raises Exception: If the batch request failed.
+        """
+
+        job_name = batch_job.name
+
+        completed_states = set([
+            'JOB_STATE_SUCCEEDED',
+            'JOB_STATE_FAILED',
+            'JOB_STATE_CANCELLED',
+            'JOB_STATE_EXPIRED',
+        ])
+
+        while True:
+            batch_job = self.client.batches.get(name=job_name)  # Initial get
+
+            if batch_job.state.name in completed_states:
+                break
+
+            time.sleep(self.pool_interval)
+
+        if batch_job.state.name == 'JOB_STATE_SUCCEEDED':
+            if not (batch_job.dest and batch_job.dest.file_name):
+                # this should not happen, but just in case as there is also inline variant which is not used there
+                raise APIError("Batch job succeeded but no output file found.", None, body=batch_job)
+
+            result_file_name = batch_job.dest.file_name
+            file_content = self.client.files.download(file=result_file_name)
+            return file_content.decode("utf-8")
+
+        else:
+            raise APIError("Batch request failed with state: " + batch_job.state.name, None, body=batch_job)

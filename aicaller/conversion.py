@@ -6,7 +6,7 @@ import jinja2
 from classconfig import ConfigurableValue, ConfigurableMixin, ConfigurableSubclassFactory, RelativePathTransformer
 from pydantic import BaseModel
 
-from aicaller.api.base import APIRequest
+from aicaller.api.base import APIRequest, GoogleGenAIAPIRequestBody
 from aicaller.api.base import OpenAIAPIRequestBody, OllamaAPIRequestBody
 from aicaller.loader import Loader
 from aicaller.sample_assembler import APISampleAssembler
@@ -151,7 +151,7 @@ class ToOllamaBatchFile(Convertor):
         "If set, the format will be loaded from this path. It must point to a python file with a RESPONSE_FORMAT variable containing subclass of pydantic BaseModel. This has precedence over format.",
         voluntary=True,
         user_default=None,
-        transform=RelativePathTransformer()
+        transform=RelativePathTransformer(allow_none=True)
     )
 
     def __post_init__(self):
@@ -173,6 +173,79 @@ class ToOllamaBatchFile(Convertor):
             sample = [{"role": "user", "content": sample}]
 
         body = OllamaAPIRequestBody(
+            model=self.model,
+            messages=sample,
+            options=self.options,
+            format=self.format
+        )
+        request = APIRequest(
+            custom_id=self.jinja_id_template.render(custom_id_fields),
+            body=body
+        )
+
+        return request
+
+    def convert(self, p: Optional[str] = None) -> Generator[str, None, None]:
+        """
+        Converts IR annotations to OpenAI batch file.
+
+        :param p: Path to data
+        :return: OpenAI batch file lines
+        """
+        dataset = self.loader.load(p)
+
+        for i, (sample, sample_ids) in enumerate(self.sample_assembler.assemble(dataset)):
+            request = self.build_request(
+                sample=sample,
+                custom_id_fields={**sample_ids, "index": i}
+            )
+            yield request.model_dump_json()
+
+
+class ToGoogleGenAIBatchFile(Convertor):
+    """
+    Base class for conversion of data to GoogleGenAI batch file.
+    """
+
+    id_format: str = ConfigurableValue(
+        "Format string for custom id. You can use fields {{index}} and fields provided by the sample assembler.",
+        user_default="request-{{index}}", voluntary=True)
+    model: str = ConfigurableValue("model name", user_default="llama3.2:latest")
+    options: dict = ConfigurableValue(
+        "additional model parameters, see official google documentation for available options",
+        user_default={"max_output_tokens": 2048}
+    )
+    sample_assembler: APISampleAssembler = ConfigurableSubclassFactory(APISampleAssembler,
+                                                                       "Sample assembler for API request.")
+    format: Optional[dict | str | Type[BaseModel]] = ConfigurableValue("Format of the response.",
+                                                                       voluntary=True,
+                                                                       user_default=None)
+    format_path: Optional[str] = ConfigurableValue(
+        "If set, the format will be loaded from this path. It must point to a python file with a RESPONSE_FORMAT variable containing subclass of pydantic BaseModel. This has precedence over format.",
+        voluntary=True,
+        user_default=None,
+        transform=RelativePathTransformer(allow_none=True)
+    )
+
+    def __post_init__(self):
+        self.jinja = jinja2.Environment()
+        self.jinja_id_template = self.jinja.from_string(self.id_format)
+        if isinstance(self.format_path, str):
+            self.format = self.load_response_class(self.format_path).model_json_schema()
+
+    def build_request(self, sample: list[dict], custom_id_fields: dict) -> APIRequest:
+        """
+        Builds a request for the API.
+
+        :param sample: Sample with messages.
+        :param custom_id_fields: Fields for custom id.
+        :return: Request for the API.
+        """
+
+        if isinstance(sample, str):
+            sample = [{"role": "user", "content": sample}]
+
+        body = GoogleGenAIAPIRequestBody(
             model=self.model,
             messages=sample,
             options=self.options,

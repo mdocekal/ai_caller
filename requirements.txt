@@ -12,3 +12,4 @@ segmentedstring~=1.0.1
 pillow~=10.4.0
 requests~=2.32.3
 pydantic~=2.11.7
+google-genai~=1.62.0

@@ -3,7 +3,8 @@ from abc import ABC
 from classconfig import get_configurable_attributes
 
 from aicaller.api import APIConfigMixin, OpenAPI, OllamaAPI
-from aicaller.api.api_async import OpenAsyncAPI, OllamaAsyncAPI
+from aicaller.api.api import GoogleGenAIAPI
+from aicaller.api.api_async import OpenAsyncAPI, OllamaAsyncAPI, GoogleGenAIAsyncAPI
 
 
 class APIFactory(ABC, APIConfigMixin):
@@ -66,3 +67,17 @@ class OllamaAPIFactory(APIFactory):
     def create_async(self, **kwargs):
         kwargs = self.mixin_kwargs(**kwargs)
         return OllamaAsyncAPI(**kwargs)  # Assuming OllamaClient supports async operations
+
+
+class GoogleGenAIAPIFactory(APIFactory):
+    """
+    Factory class to create OpenAI API instances.
+    """
+
+    def create(self, **kwargs):
+        kwargs = self.mixin_kwargs(**kwargs)
+        return GoogleGenAIAPI(**kwargs)
+
+    def create_async(self, **kwargs):
+        kwargs = self.mixin_kwargs(**kwargs)
+        return GoogleGenAIAsyncAPI(**kwargs)

@@ -8,11 +8,14 @@ from asyncio import as_completed
 from collections.abc import Iterable
 from typing import Container, AsyncGenerator, Optional, Generator
 
+from google import genai
+from google.genai import errors as genai_errors
 from ollama import AsyncClient
 from openai import APIError, RateLimitError, AsyncOpenAI
 
 from aicaller.api import APIOutput
-from aicaller.api.base import APIResponseOllama, APIResponseOpenAI, APIBase, APIRequest
+from aicaller.api.base import APIResponseOllama, APIResponseOpenAI, APIBase, APIRequest, APIResponseGoogleGenAI
+from aicaller.api.utils import GoogleGenAIAPIMixin
 
 
 class APIAsync(APIBase):
@@ -151,6 +154,54 @@ class OllamaAsyncAPI(APIAsync):
                     custom_id=request.custom_id,
                     response=APIResponseOllama(
                         body=response.model_dump(),
+                        structured=request.body.structured
+                    ),
+                    error=None
+                )
+            except Exception as e:
+                return APIOutput(
+                    custom_id=request.custom_id,
+                    response=None,
+                    error=str(e)
+                )
+
+
+class GoogleGenAIAsyncAPI(APIAsync, GoogleGenAIAPIMixin):
+    """
+    Handles asynchronous requests to the Google GenAI API.
+    """
+
+    def __post_init__(self):
+        if self.base_url is not None:
+            raise ValueError("Custom base URL is not supported by Google GenAI API.")
+
+        self.client = genai.Client(api_key=self.api_key).aio
+        self.semaphore = asyncio.Semaphore(self.concurrency)
+
+    async def process_single_request(self, request: APIRequest) -> APIOutput:
+        async with self.semaphore:
+            try:
+                while True:
+                    try:
+                        raw_response = await self.client.models.generate_content(
+                            model=request.body.model,
+                            contents=self.get_conversion_history(request),
+                            config=self.get_config(request)
+                        )
+                        break
+                    except genai_errors.APIError as e:
+                        if e.code == 503:
+                            print(f"Got 503 UNAVAILABLE error: {e.message}", flush=True,
+                                  file=sys.stderr)
+                            time.sleep(self.pool_interval)
+
+                response = raw_response.model_dump()
+                response["text"] = raw_response.text
+
+                return APIOutput(
+                    custom_id=request.custom_id,
+                    response=APIResponseGoogleGenAI(
+                        body=response,
                         structured=request.body.structured
                     ),
                     error=None

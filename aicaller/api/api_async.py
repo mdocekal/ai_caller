@@ -194,6 +194,8 @@ class GoogleGenAIAsyncAPI(APIAsync, GoogleGenAIAPIMixin):
                             print(f"Got 503 UNAVAILABLE error: {e.message}", flush=True,
                                   file=sys.stderr)
                             time.sleep(self.pool_interval)
+                        else:
+                            raise e
 
                 response = raw_response.model_dump()
                 response["text"] = raw_response.text

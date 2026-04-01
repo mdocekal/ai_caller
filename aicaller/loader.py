@@ -3,7 +3,7 @@ from typing import Optional
 
 from classconfig import ConfigurableMixin, ConfigurableValue, RelativePathTransformer
 from classconfig.validators import StringValidator, AnyValidator, IsNoneValidator
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, load_from_disk
 
 
 class Loader(ABC, ConfigurableMixin):
@@ -61,7 +61,14 @@ class HFLoader(Loader):
     Loader for Hugging Face datasets.
     """
 
+    load_from_disk: bool = ConfigurableValue(
+        "Uses the load_from_disk method instead of load_dataset. This is useful for loading already processed datasets that are saved to disk.",
+        user_default=False
+    )
+
     def _load(self, p: str) -> Dataset:
+        if self.load_from_disk:
+            return load_from_disk(p)
         return load_dataset(p, self.config, split=self.split)
 
 

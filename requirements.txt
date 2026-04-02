@@ -7,7 +7,7 @@ tqdm~=4.66.5
 numpy~=1.26.4
 datasets~=3.6.0
 json-repair
-ollama~=0.4.7
+ollama~=0.6.1
 segmentedstring~=1.0.1
 pillow~=10.4.0
 requests~=2.32.3

@@ -148,7 +148,7 @@ class OllamaAsyncAPI(APIAsync):
     async def process_single_request(self, request: APIRequest) -> APIOutput:
         async with self.semaphore:
             try:
-                response = await self.client.chat(**request.body.model_dump(exclude={"type"}))
+                response = await self.client.chat(**request.body.model_dump(exclude={"type"}, exclude_none=True))
 
                 return APIOutput(
                     custom_id=request.custom_id,

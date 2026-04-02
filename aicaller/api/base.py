@@ -68,6 +68,7 @@ class OllamaAPIRequestBody(APIRequestBody):
     type: Literal["ollama"] = "ollama"  # Type of the API request
     options: dict  # Options for the model, such as temperature, max tokens, etc.
     format: Optional[dict | Type[BaseModel]] = None  # Format of the response, if any
+    think: bool | str | None = None  # Whether to use the thinking
 
     @property
     def structured(self) -> bool:

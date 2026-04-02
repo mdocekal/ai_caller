@@ -4,6 +4,7 @@ from typing import Generator, Optional, Type
 
 import jinja2
 from classconfig import ConfigurableValue, ConfigurableMixin, ConfigurableSubclassFactory, RelativePathTransformer
+from classconfig.validators import AnyValidator, BoolValidator, StringValidator, IsNoneValidator
 from pydantic import BaseModel
 
 from aicaller.api.base import APIRequest, GoogleGenAIAPIRequestBody
@@ -153,6 +154,12 @@ class ToOllamaBatchFile(Convertor):
         user_default=None,
         transform=RelativePathTransformer(allow_none=True)
     )
+    think: bool | str | None = ConfigurableValue(
+        "Whether to use the thinking mode",
+        voluntary=True,
+        user_default=None,
+        validator=AnyValidator([BoolValidator(), StringValidator(), IsNoneValidator()])
+    )
 
     def __post_init__(self):
         self.jinja = jinja2.Environment()
@@ -176,7 +183,8 @@ class ToOllamaBatchFile(Convertor):
             model=self.model,
             messages=sample,
             options=self.options,
-            format=self.format
+            format=self.format,
+            think=self.think
         )
         request = APIRequest(
             custom_id=self.jinja_id_template.render(custom_id_fields),

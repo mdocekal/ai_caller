@@ -199,11 +199,11 @@ def batch_request(args):
                     result_to_write = api_output.model_dump_json()
 
                 if res_dir is None:
-                    print(result_to_write, file=res_f)
+                    print(result_to_write, file=res_f, flush=True)
                 else:
                     suffix = ".json" if api_output.response.structured else ".txt"
                     with open(res_dir / (api_output.custom_id + suffix), "w", encoding="utf-8") as res_f_separate:
-                        print(result_to_write, file=res_f_separate)
+                        print(result_to_write, file=res_f_separate, flush=True)
 
 
 def print_histogram(data: Sequence[int], bins: int = 10, max_bars: int = 10, line_prefix="\t"):
@@ -246,21 +246,29 @@ def batch_stats(args):
     tokenizers = {}
     number_of_tokens = []
     number_of_tokens_messages = []
+    number_of_tokens_sample_cnt = 0
     with open(args.file, mode='r', encoding="utf-8") as f:
-        for line in f:
-            record = json.loads(line)
-            model = record["body"]["model"]
-            model = model.rstrip("-mini")
-            if model not in tokenizers:
-                tokenizers[model] = tiktoken.encoding_for_model(model)
+        with tqdm(f, desc="Processing samples", unit="sample") as samples_pbar:
+            for line in samples_pbar:
+                record = json.loads(line)
+                model = record["body"]["model"]
+                model = model.rstrip("-mini")
+                if model not in tokenizers:
+                    try:
+                        tokenizers[model] = tiktoken.encoding_for_model(model)
+                    except KeyError:
+                        logging.warning("Unknown model %r; falling back to o200k_base for token counting.", model)
+                        tokenizers[model] = tiktoken.get_encoding("o200k_base")
 
-            number_of_tokens_sample = 0
-            for message in record["body"]["messages"]:
-                token_cnt = len(tokenizers[model].encode(message["content"], allowed_special="all"))
-                number_of_tokens_sample += token_cnt
-                number_of_tokens_messages.append(token_cnt)
+                number_of_tokens_sample = 0
+                for message in record["body"]["messages"]:
+                    token_cnt = len(tokenizers[model].encode(message["content"], allowed_special="all"))
+                    number_of_tokens_sample += token_cnt
+                    number_of_tokens_messages.append(token_cnt)
 
-            number_of_tokens.append(number_of_tokens_sample)
+                number_of_tokens_sample_cnt += number_of_tokens_sample
+                samples_pbar.set_postfix(tokens=number_of_tokens_sample_cnt)
+                number_of_tokens.append(number_of_tokens_sample)
 
     print("Granularity: sample")
     print_batch_stats(number_of_tokens)

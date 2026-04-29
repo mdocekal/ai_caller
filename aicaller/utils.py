@@ -6,6 +6,7 @@ Created on 02.12.24
 """
 import base64
 import json
+import logging
 from io import BytesIO
 from json import JSONDecodeError
 from math import ceil
@@ -133,7 +134,11 @@ class TokenCounter:
         model = sample["body"]["model"]
 
         if model not in self.tokenizers:
-            self.tokenizers[model] = tiktoken.encoding_for_model(model)
+            try:
+                self.tokenizers[model] = tiktoken.encoding_for_model(model)
+            except KeyError:
+                logging.warning("Unknown model %r; falling back to o200k_base for token counting.", model)
+                self.tokenizers[model] = tiktoken.get_encoding("o200k_base")
 
         token_cnt = 0
         for message in sample["body"]["messages"]:

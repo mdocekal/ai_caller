@@ -4,10 +4,12 @@ Created on 17.02.25
 
 :author:     Martin Dočekal
 """
+import unittest
 from pathlib import Path
 from unittest import TestCase
 from aicaller.template import StringTemplate, SegmentedStringTemplate, OpenAIMessageBuilder, OpenAITextContent, \
-    OpenAIImageContent, OpenAIMultiModalMessageBuilder, OllamaMessageBuilder, MessagesTemplate
+    OpenAIImageContent, OpenAIMultiModalMessageBuilder, OllamaMessageBuilder, MessagesTemplate, \
+    Jinja2EnvironmentSingletonFactory, truncate_by_tokens, HAS_TIKTOKEN, HAS_TRANSFORMERS
 
 SCRIPT_PATH = Path(__file__).parent
 FIXTURES_PATH = SCRIPT_PATH / "fixtures"
@@ -177,3 +179,96 @@ class TestMessagesTemplate(TestCase):
                 ]
             }
         ], res)
+
+
+class TestTruncateByTokensFilter(unittest.TestCase):
+
+    def setUp(self):
+        """Set up standard test data used across multiple tests."""
+        # "One two three four five." is tokenized consistently by most subword tokenizers
+        self.sample_text = "One two three four five."
+        self.hf_model = "gpt2"
+        self.tiktoken_model = "gpt-4"
+
+    @unittest.skipUnless(HAS_TRANSFORMERS, "transformers library not installed")
+    def test_transformers_truncate_right(self):
+        """Test keeping the first N tokens using Transformers."""
+        # Expected tokens: ['One', ' two', ' three']
+        result = truncate_by_tokens(
+            self.sample_text, self.hf_model, 3, direction="right", backend="transformers"
+        )
+        self.assertEqual(result, "One two three")
+
+    @unittest.skipUnless(HAS_TRANSFORMERS, "transformers library not installed")
+    def test_transformers_truncate_left(self):
+        """Test keeping the last N tokens using Transformers."""
+        # Expected tokens: [' four', ' five', '.']
+        result = truncate_by_tokens(
+            self.sample_text, self.hf_model, 3, direction="left", backend="transformers"
+        )
+        self.assertEqual(result, " four five.")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken library not installed")
+    def test_tiktoken_truncate_right(self):
+        """Test keeping the first N tokens using Tiktoken."""
+        result = truncate_by_tokens(
+            self.sample_text, self.tiktoken_model, 3, direction="right", backend="tiktoken"
+        )
+        self.assertEqual(result, "One two three")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken library not installed")
+    def test_tiktoken_truncate_left(self):
+        """Test keeping the last N tokens using Tiktoken."""
+        result = truncate_by_tokens(
+            self.sample_text, self.tiktoken_model, 3, direction="left", backend="tiktoken"
+        )
+        self.assertEqual(result, " four five.")
+
+    def test_short_text_returns_unchanged(self):
+        """Test that text shorter than the token limit returns the exact original text."""
+        # Assuming transformers is available for this test
+        if HAS_TRANSFORMERS:
+            result = truncate_by_tokens(
+                self.sample_text, self.hf_model, 100, backend="transformers"
+            )
+            self.assertEqual(result, self.sample_text)
+
+    def test_empty_string(self):
+        """Test that an empty string returns an empty string."""
+        if HAS_TRANSFORMERS:
+            self.assertEqual(truncate_by_tokens("", self.hf_model, 5), "")
+        if HAS_TIKTOKEN:
+            self.assertEqual(truncate_by_tokens("", self.tiktoken_model, 5, backend="tiktoken"), "")
+
+    def test_invalid_direction(self):
+        """Test that an invalid direction raises a ValueError."""
+        if HAS_TRANSFORMERS:
+            with self.assertRaises(ValueError):
+                truncate_by_tokens(self.sample_text, self.hf_model, 3, direction="middle")
+
+    def test_invalid_backend(self):
+        """Test that an unsupported backend raises a ValueError."""
+        with self.assertRaises(ValueError):
+            truncate_by_tokens(self.sample_text, self.hf_model, 3, backend="spacy")
+
+
+class TestJinja2EnvironmentIntegration(unittest.TestCase):
+
+    def setUp(self):
+        """Initialize the factory and get the Jinja2 environment."""
+        self.factory = Jinja2EnvironmentSingletonFactory()
+        self.env = self.factory.jinja_env
+
+    def test_filter_registered(self):
+        """Test that the filter is successfully registered in the Jinja environment."""
+        self.assertIn("truncate", self.env.filters)
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken library not installed")
+    def test_template_rendering(self):
+        """Test rendering a Jinja2 template using the custom filter."""
+        template_str = '{{ text | truncate(tokenizer_name="gpt-4", number_of_tokens=2, direction="right", backend="tiktoken") }}'
+        template = self.env.from_string(template_str)
+
+        rendered = template.render(text="Alpha beta gamma delta.")
+        # "Alpha", " beta"
+        self.assertEqual(rendered, "Alpha beta")

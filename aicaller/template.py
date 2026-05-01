@@ -10,8 +10,102 @@ from classconfig.validators import ListOfTypesValidator, StringValidator, AnyVal
 from segmentedstring import SegmentedString
 
 from aicaller.utils import is_url, obtain_base64_image, detect_image_format
+from functools import lru_cache
+from transformers import AutoTokenizer
 
-from google.genai import types as genai_types
+# Optional imports so the factory doesn't crash if only one is installed
+try:
+    from transformers import AutoTokenizer
+
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
+
+try:
+    import tiktoken
+
+    HAS_TIKTOKEN = True
+except ImportError:
+    HAS_TIKTOKEN = False
+
+
+@lru_cache(maxsize=10)
+def _get_hf_tokenizer(tokenizer_name: str):
+    """Caches the Hugging Face fast tokenizer."""
+    return AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+
+
+@lru_cache(maxsize=10)
+def _get_tiktoken_encoding(tokenizer_name: str):
+    """
+    Caches the tiktoken encoding.
+    Handles both encoding names (e.g., 'cl100k_base') and model names (e.g., 'gpt-4').
+    """
+    try:
+        return tiktoken.get_encoding(tokenizer_name)
+    except ValueError:
+        return tiktoken.encoding_for_model(tokenizer_name)
+
+
+def truncate_by_tokens(text: str, tokenizer_name: str, number_of_tokens: int, direction: str = "right",
+                       backend: str = "transformers") -> str:
+    """
+    Jinja2 filter to truncate text by token count.
+    Supports both Hugging Face 'transformers' (via offsets) and 'tiktoken' (via byte decoding).
+
+    :param text: text to truncate
+    :param tokenizer_name: tokenizer name
+    :param number_of_tokens: maximum number of tokens to truncate
+    :param direction: From which side to truncate, 'left' or 'right'
+    :param backend: which tokenizer backend to use, 'transformers' or 'tiktoken'
+    :return: truncated text
+    """
+    if not text:
+        return text
+
+    if backend == "tiktoken":
+        if not HAS_TIKTOKEN:
+            raise ImportError("The 'tiktoken' library is not installed.")
+
+        encoding = _get_tiktoken_encoding(tokenizer_name)
+        # tiktoken operates on bytes, so decode exactly preserves the original text
+        tokens = encoding.encode(text, disallowed_special=())
+
+        if len(tokens) <= number_of_tokens:
+            return text
+
+        if direction == "right":
+            return encoding.decode(tokens[:number_of_tokens])
+        elif direction == "left":
+            return encoding.decode(tokens[-number_of_tokens:])
+        else:
+            raise ValueError("Truncation direction must be either 'left' or 'right'")
+
+    elif backend == "transformers":
+        if not HAS_TRANSFORMERS:
+            raise ImportError("The 'transformers' library is not installed.")
+
+        tokenizer = _get_hf_tokenizer(tokenizer_name)
+        if not tokenizer.is_fast:
+            raise ValueError(f"Tokenizer '{tokenizer_name}' does not have a Fast implementation.")
+
+        encoding_result = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+        offsets = encoding_result["offset_mapping"]
+
+        if len(offsets) <= number_of_tokens:
+            return text
+
+        if direction == "right":
+            end_char_index = offsets[number_of_tokens - 1][1]
+            return text[:end_char_index]
+        elif direction == "left":
+            start_char_index = offsets[-number_of_tokens][0]
+            return text[start_char_index:]
+        else:
+            raise ValueError("Truncation direction must be either 'left' or 'right'")
+
+    else:
+        raise ValueError("Backend must be 'transformers' or 'tiktoken'")
 
 
 class Jinja2EnvironmentSingletonFactory:
@@ -29,6 +123,7 @@ class Jinja2EnvironmentSingletonFactory:
             self.jinja_env.filters["fromjson"] = json.loads
             self.jinja_env.filters["filter_dict"] = lambda d, keys: {k: v for k, v in d.items() if k in keys}
             self.jinja_env.filters["model_dump_json"] = lambda obj: obj.model_dump_json()
+            self.jinja_env.filters["truncate"] = truncate_by_tokens
 
 
 class Template(ABC):

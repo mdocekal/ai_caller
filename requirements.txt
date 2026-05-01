@@ -13,3 +13,4 @@ pillow~=10.4.0
 requests~=2.32.3
 pydantic~=2.11.7
 google-genai~=1.62.0
+transformers~=5.7.0

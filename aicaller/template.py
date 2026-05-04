@@ -47,6 +47,7 @@ def _get_tiktoken_encoding(tokenizer_name: str):
         return tiktoken.encoding_for_model(tokenizer_name)
 
 
+@lru_cache(maxsize=100)
 def truncate_by_tokens(text: str, tokenizer_name: str, number_of_tokens: int, direction: str = "right",
                        backend: str = "transformers") -> str:
     """

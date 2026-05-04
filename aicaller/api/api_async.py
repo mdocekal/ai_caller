@@ -4,7 +4,6 @@ import sys
 import threading
 import time
 from abc import abstractmethod
-from asyncio import as_completed
 from collections.abc import Iterable
 from typing import Container, AsyncGenerator, Optional, Generator
 
@@ -35,13 +34,50 @@ class APIAsync(APIBase):
 
     async def process_requests(self, requests: Iterable[APIRequest]) -> AsyncGenerator[APIOutput, None]:
         """
-        Processes a list of requests.
+        Processes a list of requests using a bounded worker pool.
+
+        Workers pull requests in input order, so callers can group requests sharing
+        a common prefix together to better exploit API-side prompt caching.
 
         :param requests: Iterable of request dictionaries.
-        :return: Processed requests
+        :return: Processed requests in completion order.
         """
-        for o in as_completed(self.process_single_request(request) for request in requests):
-            yield await o
+        in_q: asyncio.Queue = asyncio.Queue(maxsize=self.concurrency)
+        out_q: asyncio.Queue = asyncio.Queue(maxsize=self.concurrency)
+        sentinel = object()
+
+        async def worker():
+            while True:
+                req = await in_q.get()
+                if req is None:
+                    break
+                result = await self.process_single_request(req)
+                await out_q.put(result)
+
+        async def producer():
+            for req in requests:
+                await in_q.put(req)
+            for _ in range(self.concurrency):
+                await in_q.put(None)
+
+        workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
+        prod_task = asyncio.create_task(producer())
+
+        async def finalize():
+            await prod_task
+            await asyncio.gather(*workers)
+            await out_q.put(sentinel)
+
+        finalize_task = asyncio.create_task(finalize())
+
+        try:
+            while True:
+                item = await out_q.get()
+                if item is sentinel:
+                    break
+                yield item
+        finally:
+            await finalize_task
 
     @staticmethod
     def read_request_file(path_to_file: str) -> Iterable[APIRequest]:
@@ -106,34 +142,32 @@ class OpenAsyncAPI(APIAsync):
         self.client = AsyncOpenAI(
             api_key=self.api_key, base_url=self.base_url
         )
-        self.semaphore = asyncio.Semaphore(self.concurrency)
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
-        async with self.semaphore:
-            try:
-                while True:
-                    try:
-                        response = await self.client.chat.completions.create(**request.body.model_dump(exclude={"type"}))
-                        break
-                    except RateLimitError:
-                        print(f"Rate limit reached. Waiting for {self.pool_interval} seconds.", flush=True,
-                              file=sys.stderr)
-                        time.sleep(self.pool_interval)
+        try:
+            while True:
+                try:
+                    response = await self.client.chat.completions.create(**request.body.model_dump(exclude={"type"}))
+                    break
+                except RateLimitError:
+                    print(f"Rate limit reached. Waiting for {self.pool_interval} seconds.", flush=True,
+                          file=sys.stderr)
+                    time.sleep(self.pool_interval)
 
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=APIResponseOpenAI(
-                        body=response.model_dump(),
-                        structured=request.body.structured
-                    ),
-                    error=None
-                )
-            except APIError as e:
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=None,
-                    error=str(e)
-                )
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=APIResponseOpenAI(
+                    body=response.model_dump(),
+                    structured=request.body.structured
+                ),
+                error=None
+            )
+        except APIError as e:
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=None,
+                error=str(e)
+            )
 
 
 class OllamaAsyncAPI(APIAsync):
@@ -143,27 +177,25 @@ class OllamaAsyncAPI(APIAsync):
 
     def __post_init__(self):
         self.client = AsyncClient(host=self.base_url)
-        self.semaphore = asyncio.Semaphore(self.concurrency)
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
-        async with self.semaphore:
-            try:
-                response = await self.client.chat(**request.body.model_dump(exclude={"type"}, exclude_none=True))
+        try:
+            response = await self.client.chat(**request.body.model_dump(exclude={"type"}, exclude_none=True))
 
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=APIResponseOllama(
-                        body=response.model_dump(),
-                        structured=request.body.structured
-                    ),
-                    error=None
-                )
-            except Exception as e:
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=None,
-                    error=str(e)
-                )
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=APIResponseOllama(
+                    body=response.model_dump(),
+                    structured=request.body.structured
+                ),
+                error=None
+            )
+        except Exception as e:
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=None,
+                error=str(e)
+            )
 
 
 class GoogleGenAIAsyncAPI(APIAsync, GoogleGenAIAPIMixin):
@@ -176,41 +208,39 @@ class GoogleGenAIAsyncAPI(APIAsync, GoogleGenAIAPIMixin):
             raise ValueError("Custom base URL is not supported by Google GenAI API.")
 
         self.client = genai.Client(api_key=self.api_key).aio
-        self.semaphore = asyncio.Semaphore(self.concurrency)
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
-        async with self.semaphore:
-            try:
-                while True:
-                    try:
-                        raw_response = await self.client.models.generate_content(
-                            model=request.body.model,
-                            contents=self.get_conversion_history(request),
-                            config=self.get_config(request)
-                        )
-                        break
-                    except genai_errors.APIError as e:
-                        if e.code == 503:
-                            print(f"Got 503 UNAVAILABLE error: {e.message}", flush=True,
-                                  file=sys.stderr)
-                            time.sleep(self.pool_interval)
-                        else:
-                            raise e
+        try:
+            while True:
+                try:
+                    raw_response = await self.client.models.generate_content(
+                        model=request.body.model,
+                        contents=self.get_conversion_history(request),
+                        config=self.get_config(request)
+                    )
+                    break
+                except genai_errors.APIError as e:
+                    if e.code == 503:
+                        print(f"Got 503 UNAVAILABLE error: {e.message}", flush=True,
+                                file=sys.stderr)
+                        time.sleep(self.pool_interval)
+                    else:
+                        raise e
 
-                response = raw_response.model_dump()
-                response["text"] = raw_response.text
+            response = raw_response.model_dump()
+            response["text"] = raw_response.text
 
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=APIResponseGoogleGenAI(
-                        body=response,
-                        structured=request.body.structured
-                    ),
-                    error=None
-                )
-            except Exception as e:
-                return APIOutput(
-                    custom_id=request.custom_id,
-                    response=None,
-                    error=str(e)
-                )
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=APIResponseGoogleGenAI(
+                    body=response,
+                    structured=request.body.structured
+                ),
+                error=None
+            )
+        except Exception as e:
+            return APIOutput(
+                custom_id=request.custom_id,
+                response=None,
+                error=str(e)
+            )

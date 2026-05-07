@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Literal, Union, Type
 
 from classconfig import ConfigurableValue, ConfigurableMixin
-from classconfig.validators import StringValidator, MinValueIntegerValidator
+from classconfig.validators import StringValidator, MinValueIntegerValidator, AnyValidator, IsNoneValidator
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +27,10 @@ class APIConfigMixin(ConfigurableMixin):
     concurrency: int = ConfigurableValue(
         desc="Maximum number of concurrent requests to the API. This is used with async processing.",
         user_default=10, voluntary=True, validator=MinValueIntegerValidator(1)
+    )
+    timeout: int = ConfigurableValue(
+        desc="Timout in seconds",
+        user_default=None, voluntary=True, validator=AnyValidator([IsNoneValidator(), MinValueIntegerValidator(1)])
     )
 
 

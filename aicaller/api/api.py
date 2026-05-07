@@ -142,7 +142,7 @@ class OpenAPI(API):
     body_arguments_blacklist: set[str] = {"type"}
 
     def __post_init__(self):
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
 
     def process_single_request(self, request: APIRequest) -> APIOutput:
         try:
@@ -292,6 +292,8 @@ class OpenAPI(API):
 class OllamaAPI(API):
 
     def __post_init__(self):
+        if self.timeout is not None:
+            raise ValueError("Timeout is not supported for Ollama API.")
         self.client = OllamaClient(host=self.base_url)
 
     def process_single_request(self, request: APIRequest) -> APIOutput:
@@ -329,7 +331,8 @@ class GoogleGenAIAPI(API, GoogleGenAIAPIMixin):
         if self.base_url is not None:
             raise ValueError("Custom base URL is not supported by Google GenAI API.")
 
-        self.client = genai.Client(api_key=self.api_key)
+        http_options = genai.types.HttpOptions(timeout=self.timeout * 1000) if self.timeout is not None else None
+        self.client = genai.Client(api_key=self.api_key, http_options=http_options)
 
     def process_single_request(self, request: APIRequest) -> APIOutput:
         try:

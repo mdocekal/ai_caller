@@ -140,7 +140,7 @@ class OpenAsyncAPI(APIAsync):
 
     def __post_init__(self):
         self.client = AsyncOpenAI(
-            api_key=self.api_key, base_url=self.base_url
+            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
@@ -176,6 +176,8 @@ class OllamaAsyncAPI(APIAsync):
     """
 
     def __post_init__(self):
+        if self.timeout is not None:
+            raise ValueError("Timeout is not supported for Ollama API.")
         self.client = AsyncClient(host=self.base_url)
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
@@ -207,7 +209,8 @@ class GoogleGenAIAsyncAPI(APIAsync, GoogleGenAIAPIMixin):
         if self.base_url is not None:
             raise ValueError("Custom base URL is not supported by Google GenAI API.")
 
-        self.client = genai.Client(api_key=self.api_key).aio
+        http_options = genai.types.HttpOptions(timeout=self.timeout * 1000) if self.timeout is not None else None
+        self.client = genai.Client(api_key=self.api_key, http_options=http_options).aio
 
     async def process_single_request(self, request: APIRequest) -> APIOutput:
         try:

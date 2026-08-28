@@ -110,6 +110,13 @@ class API(APIBase):
         ...
 
     @abstractmethod
+    def download_and_process_batch(self, batch_id: str, path_to_file: str) -> list[APIOutput]:
+        """
+        Downloads the results of a finished batch request and parses them.
+        """
+        ...
+
+    @abstractmethod
     def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
         """
         Sends requests to API and waits for the batch request to finish.
@@ -225,6 +232,25 @@ class OpenAPI(API):
                 samples[record.custom_id] = record
         return samples
 
+    def download_and_process_batch(self, batch_id: str, path_to_file: str) -> list[APIOutput]:
+        batch = self.client.batches.retrieve(batch_id)
+        file_content = self.wait_for_batch_request(batch)
+        batch_samples = self.read_batch_file(path_to_file)
+        content = []
+
+        for line in file_content.splitlines():
+            record = json.loads(line)
+            content.append(APIOutput(
+                custom_id=record["custom_id"],
+                response=APIResponseOpenAI(
+                    body=record["response"]["body"],
+                    structured=batch_samples[record["custom_id"]].body.structured
+                ),
+                error=None
+            ))
+
+        return content
+
     def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
         """
         Sends requests to OpenAI API and waits for the batch request to finish.
@@ -316,6 +342,9 @@ class OllamaAPI(API):
             )
 
     def batch_request(self, path_to_file: str) -> dict:
+        raise NotImplementedError("Batch request is not supported by Ollama API.")
+
+    def download_and_process_batch(self, batch_id: str, path_to_file: str) -> list[APIOutput]:
         raise NotImplementedError("Batch request is not supported by Ollama API.")
 
     def batch_request_and_wait(self, path_to_file: str) -> str:
@@ -449,6 +478,46 @@ class GoogleGenAIAPI(API, GoogleGenAIAPIMixin):
                 samples[record.custom_id] = record
         return samples
 
+    def download_and_process_batch(self, batch_id: str, path_to_file: str) -> list[APIOutput]:
+        batch_job = self.client.batches.get(name=batch_id)
+        file_content = self.wait_for_batch_request(batch_job)
+        batch_samples = self.read_batch_file(path_to_file)
+        content = []
+
+        for line in file_content.splitlines():
+            raw_record = json.loads(line)
+            key = raw_record["key"]
+            if "error" in raw_record:
+                content.append(APIOutput(
+                    custom_id=key,
+                    response=None,
+                    error=raw_record["error"]["message"]
+                ))
+                continue
+            try:
+                if "usageMetadata" in raw_record["response"]:
+                    raw_record["response"]["usageMetadata"].pop("serviceTier", None)
+                raw_response = GenerateContentResponse.model_validate(raw_record["response"])
+                response = raw_response.model_dump()
+                response["text"] = raw_response.text
+
+                content.append(APIOutput(
+                    custom_id=key,
+                    response=APIResponseGoogleGenAI(
+                        body=response,
+                        structured=batch_samples[key].body.structured
+                    ),
+                    error=None
+                ))
+            except ValidationError as e:
+                content.append(APIOutput(
+                    custom_id=key,
+                    response=None,
+                    error=f"Failed to parse response for key {key}: {str(e)}"
+                ))
+
+        return content
+
     def batch_request_and_wait(self, path_to_file: str) -> list[APIOutput]:
         """
         Sends requests to Google GenAI API and waits for the batch request to finish.
@@ -476,6 +545,8 @@ class GoogleGenAIAPI(API, GoogleGenAIAPIMixin):
                         ))
                         continue
                     try:
+                        if "usageMetadata" in raw_record["response"]:
+                            raw_record["response"]["usageMetadata"].pop("serviceTier", None)
                         raw_response = GenerateContentResponse.model_validate(raw_record["response"])
                         response = raw_response.model_dump()
                         response["text"] = raw_response.text

@@ -131,6 +131,9 @@ def batch_request(args):
 
     api = api_factory.create_async() if args.asynchronous else api_factory.create()
 
+    if args.download_batch_id and (args.synchronous or args.asynchronous):
+        raise ValueError("Cannot use --download_batch_id with --synchronous or --asynchronous.")
+
     if args.line is not None:
         print(api.process_line(args.file, args.line).model_dump_json())
         return
@@ -176,8 +179,11 @@ def batch_request(args):
 
             if args.synchronous or args.asynchronous:
                 res = api.process_request_file(str(f), finished_requests)
+            elif args.download_batch_id:
+                res = api.download_and_process_batch(args.download_batch_id, str(f))
             else:
                 res = api.batch_request_and_wait(str(f))
+
 
             for api_output in tqdm(res, desc="Processing requests", unit="request", total=len(batch_ids), initial=len(finished_requests)):
                 api_output: APIOutput
@@ -558,6 +564,9 @@ def main():
     batch_request_parser.add_argument("--only_output",
                                         help="If specified, will write only model output (0. choice) to results file, without metadata.",
                                         action="store_true")
+    batch_request_parser.add_argument("--download_batch_id",
+                                      help="Download and process already finished batch data without sending it to the API.",
+                                      default=None)
     batch_request_parser.set_defaults(func=batch_request)
 
     prompt_res_pair_parser = subparsers.add_parser("prompt_res_pair", help="Pairs prompt with response.")

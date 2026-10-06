@@ -1,9 +1,10 @@
+import json
 from abc import ABC, abstractmethod
 from typing import Optional
 
 from classconfig import ConfigurableMixin, ConfigurableValue, RelativePathTransformer
 from classconfig.validators import StringValidator, AnyValidator, IsNoneValidator
-from datasets import Dataset, load_dataset, load_from_disk
+from datasets import Dataset, Features, Value, load_dataset, load_from_disk
 
 
 class Loader(ABC, ConfigurableMixin):
@@ -43,8 +44,50 @@ class JSONLLoader(Loader):
     Loader for JSONL files.
     """
 
+    # JSON type -> datasets feature, for flat records
+    _SCALAR_FEATURES = {
+        frozenset({str}): "string",
+        frozenset({bool}): "bool",
+        frozenset({int}): "int64",
+        frozenset({float}): "float64",
+        frozenset({int, float}): "float64",
+    }
+
+    @classmethod
+    def infer_features(cls, p: str) -> Optional[Features]:
+        """
+        Infers the features from the whole file.
+
+        datasets infers the schema of a JSON file from its first block only, so a field that is null at the
+        beginning of the file and e.g. a string later fails with "Couldn't cast array of type string to null".
+        This reads every record and assigns each field the type of its non-null values.
+
+        :param p: path to the JSONL file
+        :return: features for flat records with scalar values, None (leave inference to datasets) if a field
+            holds lists/objects or values of incompatible types
+        """
+        types = {}
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                for k, v in json.loads(line).items():
+                    types.setdefault(k, set()).add(type(v))
+
+        features = {}
+        for k, ts in types.items():
+            ts.discard(type(None))
+            if not ts:
+                features[k] = Value("null")
+                continue
+            dtype = cls._SCALAR_FEATURES.get(frozenset(ts))
+            if dtype is None:
+                return None
+            features[k] = Value(dtype)
+        return Features(features)
+
     def _load(self, p: str) -> Dataset:
-        return load_dataset("json", data_files=p)["train"]
+        return load_dataset("json", data_files=p, features=self.infer_features(p))["train"]
 
 
 class CSVLoader(Loader):

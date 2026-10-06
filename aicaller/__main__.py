@@ -134,6 +134,9 @@ def batch_request(args):
     if args.download_batch_id and (args.synchronous or args.asynchronous):
         raise ValueError("Cannot use --download_batch_id with --synchronous or --asynchronous.")
 
+    if args.lpf and not args.asynchronous:
+        raise ValueError("--lpf can only be used with --asynchronous.")
+
     if args.line is not None:
         print(api.process_line(args.file, args.line).model_dump_json())
         return
@@ -177,7 +180,9 @@ def batch_request(args):
                 if batch_ids.issubset(finished_requests):
                     continue
 
-            if args.synchronous or args.asynchronous:
+            if args.asynchronous:
+                res = api.process_request_file(str(f), finished_requests, lpf=args.lpf)
+            elif args.synchronous:
                 res = api.process_request_file(str(f), finished_requests)
             elif args.download_batch_id:
                 res = api.download_and_process_batch(args.download_batch_id, str(f))
@@ -557,6 +562,9 @@ def main():
                                                         action="store_true")
     sync_async_group_batch_request_parser.add_argument("-s", "--synchronous", help="Forces to use synchronous API instead of batch API.",
                                                        action="store_true")
+    batch_request_parser.add_argument("--lpf",
+                                      help="Longest Prompt First heuristic. Sorts requests in each batch file by length in descending order before sending them, which reduces the chance that a long request started at the end prolongs the total runtime. The character length of the request (raw JSON line) is used as a proxy for the number of tokens, because a tokenizer is not always available. All requests of a batch file are loaded into memory. Can only be used with --asynchronous.",
+                                      action="store_true")
     batch_request_parser.add_argument("--reverse", help="Reverse the order of batch splits.", action="store_true")
     batch_request_parser.add_argument("--cont",
                                       help="Continue processing of the batch file. If the results file is specified, it will skip processing of completely processed batch files.",

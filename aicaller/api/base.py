@@ -3,7 +3,7 @@ from typing import Optional, Literal, Union, Type
 
 from classconfig import ConfigurableValue, ConfigurableMixin
 from classconfig.validators import StringValidator, MinValueIntegerValidator, AnyValidator, IsNoneValidator
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class APIConfigMixin(ConfigurableMixin):
@@ -106,6 +106,11 @@ class APIResponse(BaseModel, ABC):
     """
     Represents the response from an API call.
     """
+    # Google GenAI responses may contain raw binary fields (e.g. Part.thought_signature) nested
+    # inside `body`. Without this, pydantic tries to decode such bytes as UTF-8 text when
+    # serializing to JSON, which fails for non-text binary data.
+    model_config = ConfigDict(ser_json_bytes="base64")
+
     body: dict
     structured: bool
 
@@ -159,6 +164,8 @@ class APIOutput(BaseModel):
     """
     Represents the output of an API call.
     """
+    model_config = ConfigDict(ser_json_bytes="base64")
+
     custom_id: str
     response: Optional[Union[APIResponseOpenAI, APIResponseOllama, APIResponseGoogleGenAI]] = Field(None, discriminator='type')
     error: Optional[str] = None

@@ -91,13 +91,35 @@ class APIAsync(APIBase):
             for line in f:
                 yield APIRequest.model_validate_json(line)
 
-    def process_request_file(self, path_to_file: str, skip: Optional[Container[str]] = None) -> Generator[APIOutput, None, None]:
+    @staticmethod
+    def read_request_file_lpf(path_to_file: str) -> list[APIRequest]:
+        """
+        Reads all requests from a file and sorts them by length in descending order
+        (Longest Prompt First heuristic).
+
+        The character length of the raw JSON line is used as a proxy for the processing time,
+        as a tokenizer is not always available.
+
+        :param path_to_file: Path to the file with requests.
+        :return: List of requests sorted from the longest to the shortest
+        """
+        with open(path_to_file, "r") as f:
+            requests = [(len(line), APIRequest.model_validate_json(line)) for line in f]
+
+        requests.sort(key=lambda x: x[0], reverse=True)  # stable, so equal lengths keep the file order
+        return [r for _, r in requests]
+
+    def process_request_file(self, path_to_file: str, skip: Optional[Container[str]] = None,
+                             lpf: bool = False) -> Generator[APIOutput, None, None]:
         """
         Processes requests from a file, skipping those with IDs in the skip set.
         It works like a bridge between synchronous and asynchronous processing.
 
         :param path_to_file: Path to the file with requests.
         :param skip: Set of custom request IDs to skip.
+        :param lpf: If True, requests are sent in descending order of their length (Longest Prompt First
+            heuristic). Character length is used as a proxy for the number of tokens.
+            All requests are loaded into memory.
         :return: Results for each request
         """
 
@@ -112,7 +134,10 @@ class APIAsync(APIBase):
             async def produce():
                 try:
                     async for o in self.process_requests(
-                            request for request in self.read_request_file(path_to_file)
+                            request for request in (
+                                self.read_request_file_lpf(path_to_file) if lpf
+                                else self.read_request_file(path_to_file)
+                            )
                             if skip is None or request.custom_id not in skip
                     ):
                         q.put(o)
